@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 上传文件与本地数据
+static/uploads/
+*.db
+mineru_data/
+
+# 版本控制与编辑器
+.git/
+.gitignore
+.vscode/
+.DS_Store
+
+# 环境与部署文件（密钥不入镜像）
+.env
+docker-compose.yml
+DEPLOY.md

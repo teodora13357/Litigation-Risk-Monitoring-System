@@ -1,0 +1,149 @@
+# 案件管理系统 —— Docker Compose 编排
+#
+# 使用方式：
+#   1. cp .env.example .env  并按需修改（数据库密码、SECRET_KEY 等）
+#   2. docker compose up -d                # 启动 app + postgres + redis
+#   3. docker compose --profile ocr up -d  # 额外启动 MinerU OCR 服务
+#
+# 说明：
+#   - MinerU 服务使用 profile "ocr"，默认不启动；
+#     启动前请阅读 DEPLOY.md「常见问题排查」中关于 MinerU 补丁的说明。
+#   - 生产环境请务必修改 .env 中的默认密码与 SECRET_KEY。
+#   - 若已有独立运行的 PostgreSQL / Redis / MinerU，可将对应服务注释掉并调整 .env 连接地址。
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: case-mgmt-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PG_USER:-case_app}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-case_pass_123}
+      POSTGRES_DB: ${PG_DB:-case_management}
+    ports:
+      # 仅本机可访问，避免数据库端口暴露到公网
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-case_app} -d ${PG_DB:-case_management}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - case-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: case-mgmt-redis
+    restart: unless-stopped
+    # 当前 Redis 为预留缓存模块，未配置密码；如需密码请设置并同步 REDIS_URL
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - case-net
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: case-management-app:latest
+    container_name: case-mgmt-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # 数据库：容器内通过服务名 postgres 访问
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_USER: ${PG_USER:-case_app}
+      PG_PASSWORD: ${PG_PASSWORD:-case_pass_123}
+      PG_DB: ${PG_DB:-case_management}
+      # Redis
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # JWT 密钥（务必在生产环境覆盖）
+      SECRET_KEY: ${SECRET_KEY:-case-management-secret-key-change-me}
+      # 阿里云 OSS（可选，未配置则回退本地存储）
+      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
+      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
+      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
+      OSS_BUCKET: ${OSS_BUCKET:-}
+      # MinerU OCR 服务地址（容器网络内使用服务名 mineru）
+      MINERU_API_URL: ${MINERU_API_URL:-http://mineru:30000}
+      OCR_PARSE_TIMEOUT: ${OCR_PARSE_TIMEOUT:-600}
+      OCR_BATCH_PAGES: ${OCR_BATCH_PAGES:-10}
+      OCR_PREPROCESS_DPI: ${OCR_PREPROCESS_DPI:-300}
+      OCR_MAX_IMAGE_SIDE: ${OCR_MAX_IMAGE_SIDE:-3500}
+      OCR_BINARIZE: ${OCR_BINARIZE:-auto}
+      OCR_TEXT_MIN_CHARS: ${OCR_TEXT_MIN_CHARS:-30}
+    ports:
+      - "8000:8000"
+    volumes:
+      # 上传文件持久化：避免容器重建丢失已上传文件
+      - upload_data:/app/static/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - case-net
+
+  # ===================== MinerU OCR 服务（可选，profile: ocr） =====================
+  # 说明：
+  #   - 使用本地镜像 mineru:latest（基于 vllm-openai 构建，CPU 运行 pipeline 后端）。
+  #   - 必须应用 fast_api.py 补丁，否则解析会报
+  #     "dict() got multiple values for keyword argument 'backend'"。
+  #     补丁方法见 DEPLOY.md「常见问题排查」。
+  #   - 启动：docker compose --profile ocr up -d
+  mineru:
+    image: mineru:latest
+    profiles: ["ocr"]
+    container_name: case-mgmt-mineru
+    restart: unless-stopped
+    command:
+      - mineru-api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "30000"
+      - --backend
+      - pipeline
+      - --device
+      - cpu
+    environment:
+      MINERU_MODEL_SOURCE: local
+    ports:
+      - "30000:30000"
+    volumes:
+      # 挂载与本地一致的输入 / 输出目录
+      - ./mineru_data/input:/app/input
+      - ./mineru_data/output:/app/output
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:30000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    networks:
+      - case-net
+
+volumes:
+  pg_data:
+  redis_data:
+  upload_data:
+
+networks:
+  case-net:
+    driver: bridge
