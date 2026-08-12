@@ -17,11 +17,10 @@
 | Python | 3.10+（推荐 3.12） | ⚠️ macOS 推荐用 Homebrew 安装，避免系统自带 Python 的权限问题 |
 | PostgreSQL | 14+ | 应用不会自动创建数据库，需先建库（见第二章） |
 | Redis | 7.x | 预留缓存模块，**可选**（未配置时应用可正常运行） |
-| 阿里云 OSS | — | **可选**；未配置时文件回退本地存储 `static/uploads/` |
 
 ### 1.2 Python 依赖（由 `pyproject.toml` 管理）
 
-- 基础：`fastapi` `uvicorn` `sqlalchemy` `psycopg2-binary` `pydantic` `python-multipart` `pyjwt` `openpyxl` `oss2` `redis` `pypdf`
+- 基础：`fastapi` `uvicorn` `sqlalchemy` `psycopg2-binary` `pydantic` `python-multipart` `pyjwt` `openpyxl` `redis` `pypdf`
 - OCR 增强：`requests` `pillow` `opencv-python-headless` `numpy` `pymupdf`
 
 安装方式（本地开发）：
@@ -29,7 +28,7 @@
 ```bash
 pip install .
 # 或仅安装依赖：
-pip install fastapi uvicorn sqlalchemy psycopg2-binary pydantic python-multipart pyjwt openpyxl oss2 redis pypdf requests pillow opencv-python-headless numpy pymupdf
+pip install fastapi uvicorn sqlalchemy psycopg2-binary pydantic python-multipart pyjwt openpyxl redis pypdf requests pillow opencv-python-headless numpy pymupdf
 ```
 
 ### 1.3 OCR 识别依赖（MinerU）
@@ -111,7 +110,6 @@ PGPASSWORD=case_pass_123 psql -h 127.0.0.1 -U case_app -d case_management -c "SE
 | ---- | ---- | ---- |
 | `REDIS_URL` | `redis://127.0.0.1:6379/0` | Redis 连接串（compose 内为 `redis://redis:6379/0`） |
 | `SECRET_KEY` | `case-management-secret-key-change-me` | JWT 签名密钥（**生产务必修改**） |
-| `OSS_ENDPOINT` / `OSS_ACCESS_KEY_ID` / `OSS_ACCESS_KEY_SECRET` / `OSS_BUCKET` | 空 | 阿里云 OSS 配置；四项全填才启用 OSS，否则本地存储 |
 
 ### 3.3 OCR（MinerU）
 
@@ -298,8 +296,7 @@ lsof -iTCP:8000 -sTCP:LISTEN
 ### 5.4 其它
 
 **15. 上传文件后无法预览 / 文件丢失**
-- 本地存储模式：确认 `static/uploads/` 目录存在且有写权限
-- OSS 模式：检查四个 `OSS_*` 变量是否全部正确配置；预览时会从 OSS 回填本地缓存
+- 确认 `static/uploads/` 目录存在且有写权限；文件在本地按 `YYYY/MM/` 分目录存储
 - Compose 部署：确认 `upload_data` 卷已挂载（`docker compose down -v` 会清空上传文件，慎用）
 
 **16. 前端识别结果显示"提取 0 个字段"**

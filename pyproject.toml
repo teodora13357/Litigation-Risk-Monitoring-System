@@ -17,7 +17,6 @@ dependencies = [
     "python-multipart",
     "psycopg2-binary",
     "redis",
-    "oss2",
     "pypdf",
     "pyjwt",
     "requests",

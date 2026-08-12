@@ -73,11 +73,6 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       # JWT 密钥（务必在生产环境覆盖）
       SECRET_KEY: ${SECRET_KEY:-case-management-secret-key-change-me}
-      # 阿里云 OSS（可选，未配置则回退本地存储）
-      OSS_ENDPOINT: ${OSS_ENDPOINT:-}
-      OSS_ACCESS_KEY_ID: ${OSS_ACCESS_KEY_ID:-}
-      OSS_ACCESS_KEY_SECRET: ${OSS_ACCESS_KEY_SECRET:-}
-      OSS_BUCKET: ${OSS_BUCKET:-}
       # MinerU OCR 服务地址（容器网络内使用服务名 mineru）
       MINERU_API_URL: ${MINERU_API_URL:-http://mineru:30000}
       OCR_PARSE_TIMEOUT: ${OCR_PARSE_TIMEOUT:-600}

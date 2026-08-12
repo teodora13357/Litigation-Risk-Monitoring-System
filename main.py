@@ -15,7 +15,6 @@ import models
 import schemas
 import crud
 import excel_export
-import oss_client
 import error_codes
 from error_codes import BizError
 import auth
@@ -302,24 +301,15 @@ def _run_ocr_background(
     rel_path: str,
     mime_type: str,
     content_type: str,
-    use_oss: bool,
 ) -> None:
-    """后台执行 OCR 并回写 core_documents.extracted_fields（同步接口的异步版）。"""
+    """后台执行 OCR 并回写 core_documents.extracted_fields（本地存储模式）。"""
     task = _OCR_TASKS.get(file_id)
     if task is not None:
         task["status"] = "running"
     local_path = os.path.join(_UPLOAD_DIR, rel_path)
-    tmp_download = None
     try:
-        # OSS 模式下本地文件已清理，先回填到临时文件再识别
-        if use_oss and not os.path.exists(local_path):
-            tmp_download = local_path + ".ocr_tmp"
-            oss_client.download_object(rel_path, tmp_download)
-            target = tmp_download
-        else:
-            target = local_path
-        print(f"[OCR] 开始后台识别 file_id={file_id} path={target}")
-        result = ocr_service.recognize_document(target, content_type or mime_type)
+        print(f"[OCR] 开始后台识别 file_id={file_id} path={local_path}")
+        result = ocr_service.recognize_document(local_path, content_type or mime_type)
         print(f"[OCR] 完成 file_id={file_id} ok={result.get('ok')} pages={result.get('page_count')}")
 
         # 回写数据库（后台线程需独立会话）
@@ -353,12 +343,6 @@ def _run_ocr_background(
                 "markdown": "",
                 "recognized_fields": {},
             }
-    finally:
-        if tmp_download and os.path.exists(tmp_download):
-            try:
-                os.remove(tmp_download)
-            except OSError:
-                pass
 
 _CASE_TABLE_CACHE = {}
 
@@ -425,41 +409,31 @@ async def upload_file(
     rel_path = os.path.join(rel_dir, stored_name)
     file_path = os.path.join(_UPLOAD_DIR, rel_path)
 
-    oss_etag = ""
-    use_oss = oss_client.is_oss_configured()
     recognized = None
     ocr_result = None
-    try:
-        with open(file_path, "wb") as f:
-            f.write(content)
+    # 本地存储：文件直接落盘 static/uploads/YYYY/MM/
+    with open(file_path, "wb") as f:
+        f.write(content)
 
-        # 校验 3/4：PDF 加密/损坏检测；图片损坏检测
-        if ext == "pdf":
-            from pypdf import PdfReader
-            try:
-                reader = PdfReader(file_path)
-                if reader.is_encrypted:
-                    raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "PDF文件已加密，请解除保护后重试")
-                _ = len(reader.pages)
-            except HTTPException:
-                raise
-            except Exception:
-                raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "文件已损坏，请检查后重新上传")
-        else:
-            from PIL import Image
-            try:
-                img = Image.open(file_path)
-                img.verify()
-            except Exception:
-                raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "文件已损坏，请检查后重新上传")
-
-        # 上传至 OSS（长期归档，本地文件转为预览缓存）
-        if use_oss:
-            oss_etag = oss_client.upload_object(rel_path, file_path)
-    finally:
-        # OSS 模式下清理本地临时文件（预览时按需从 OSS 拉取回填缓存）
-        if use_oss and os.path.exists(file_path):
-            os.remove(file_path)
+    # 校验 3/4：PDF 加密/损坏检测；图片损坏检测
+    if ext == "pdf":
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(file_path)
+            if reader.is_encrypted:
+                raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "PDF文件已加密，请解除保护后重试")
+            _ = len(reader.pages)
+        except HTTPException:
+            raise
+        except Exception:
+            raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "文件已损坏，请检查后重新上传")
+    else:
+        from PIL import Image
+        try:
+            img = Image.open(file_path)
+            img.verify()
+        except Exception:
+            raise BizError(error_codes.FILE_ENCRYPTED_OR_CORRUPTED, "文件已损坏，请检查后重新上传")
 
     record = cfg["model"](
         file_name=filename,
@@ -469,7 +443,6 @@ async def upload_file(
         uploader=uploader or "未署名",
         uploaded_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         case_id=case_id,
-        etag=oss_etag or None,
         md5=file_md5,
     )
     # 保存 OCR 结构化结果（含页码标记）到 extracted_fields
@@ -507,7 +480,6 @@ async def upload_file(
             rel_path,
             record.mime_type,
             file.content_type or "",
-            use_oss,
         )
         ocr_result = {
             "status": "pending",
@@ -608,18 +580,11 @@ def preview_file(doc_type: str, file_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="文件不存在")
     if row.is_deleted:
         raise HTTPException(status_code=404, detail="文件已删除")
-# 1. 本地缓存优先（预览快，OSS 故障时可离线读缓存）
+    # 本地存储模式：直接返回本地文件；文件丢失则 404
     local_path = os.path.join(_UPLOAD_DIR, row.file_path)
-    if os.path.exists(local_path):
-        return FileResponse(path=local_path, media_type=row.mime_type, headers={"Content-Disposition": "inline"})
-    # 2. 本地无缓存 → 从 OSS 拉取回填
-    if oss_client.is_oss_configured():
-        try:
-            oss_client.download_object(row.file_path, local_path)
-        except Exception:
-            raise HTTPException(status_code=404, detail="文件已丢失")
-        return FileResponse(path=local_path, media_type=row.mime_type, headers={"Content-Disposition": "inline"})
-    raise HTTPException(status_code=404, detail="文件已丢失")
+    if not os.path.exists(local_path):
+        raise HTTPException(status_code=404, detail="文件已丢失")
+    return FileResponse(path=local_path, media_type=row.mime_type, headers={"Content-Disposition": "inline"})
 
 
 @app.delete("/api/files/{doc_type}/{file_id}", tags=["案件文件"], summary="删除文件（软删除/物理删除）")
@@ -648,8 +613,6 @@ def delete_file(
             conn.execute(delete(t).where(t.c.doc_type == doc_type, t.c.file_id == file_id))
 
     if hard:
-        if oss_client.is_oss_configured():
-            oss_client.delete_object(row.file_path)
         path = os.path.join(_UPLOAD_DIR, row.file_path)
         if os.path.exists(path):
             os.remove(path)

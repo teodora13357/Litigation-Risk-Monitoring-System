@@ -54,7 +54,6 @@ class BaseFile(Base):
     uploaded_at = Column(String(50), comment="上传日期")
     case_id = Column(Integer, index=True, comment="关联案件ID")
     is_deleted = Column(Boolean, default=False, comment="软删除标记")
-    etag = Column(String(255), comment="OSS ETag")
     md5 = Column(String(64), comment="文件MD5")
 
 
