@@ -216,3 +216,27 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# ===== 案件管理系统 项目特有规则 =====
+# SQLite 本地测试库
+*.db
+*.db-journal
+
+# Excel 导出文件（生成物，不入库）
+*.xlsx
+
+# 上传文件（按 YYYY/MM 分目录）
+static/uploads/
+
+# MinerU 本地数据目录
+mineru_data/
+
+# macOS 系统文件
+.DS_Store
+
+# 原型 HTML / 临时演示文件
+*_原型_*.html
+220939*.html
+
+# 本地环境文件
+.env.local
+.vscode/
