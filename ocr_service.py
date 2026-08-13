@@ -48,13 +48,13 @@ OCR_TEXT_MIN_CHARS = int(os.getenv("OCR_TEXT_MIN_CHARS", "30"))   # PDF 内嵌�
 OCR_FAIL_MESSAGE = "OCR识别失败，建议手动录入"
 ALLOWED_EXTS = {"pdf", "jpg", "jpeg", "png", "bmp", "tiff"}
 
-# 与 schemas.CaseBase 对齐的 19 个字段（recognized_fields 键名校验用）
+# 与新的 LawsuitCase 手动录入字段对齐（recognized_fields 键名校验用）
 FIELD_NAMES = [
-    "case_number", "case_type", "involved_parties", "delivery_time",
-    "court_time", "court_location", "contact_phone", "plaintiff",
-    "id_number", "defendant", "service_client", "stage",
-    "client_contact", "processing_status", "handler", "defense_method",
-    "is_closed", "judgment_result", "compensation_amount",
+    "court_case_no", "document_type", "plaintiff", "defendant",
+    "involved_parties", "involved_clients", "case_type_name",
+    "standard_cause_name", "court_name", "current_status",
+    "assigned_contact", "case_description", "claim_amount",
+    "deadline_date", "remark",
 ]
 
 # ===================== 图像预处理 =====================
@@ -421,48 +421,59 @@ def _first_match(text: str, patterns: list) -> Optional[str]:
 
 
 def _extract_key_fields(text: str) -> dict:
-    """从 OCR 结构化文本中轻量正则提取常见字段（尽力而为，找不到为 None）。"""
+    """从 OCR 结构化文本中轻量正则提取字段（对齐新 LawsuitCase 字段名，找不到为 None）。"""
     fields = {k: None for k in FIELD_NAMES}
     # 表格转纯文本后，标签与值之间可能有 " | " 分隔符
     sep = r"[|：:\s]*"
-    fields["case_number"] = _first_match(text, [
+
+    # 案号
+    fields["court_case_no"] = _first_match(text, [
         r"([（(]?\d{4}[）)]?[^（）()\s]{2,20}民(?:初|终)\d+号)",
     ])
-    fields["case_type"] = _first_match(text, [
-        r"案由" + sep + r"([^\s\n，,。；;|]{2,30})",
-        r"([\u4e00-\u9fa5]{2,12}纠纷)",
+    # 文书类型：从文档标题/关键词识别
+    fields["document_type"] = _first_match(text, [
+        r"(民事起诉状|行政起诉状|刑事自诉状|仲裁申请书|答辩状|应诉通知书|答辩通知书|举证通知书|开庭传票|传\s*票|开庭通知书|判决书|裁决书|裁定书|调解书|生效证明|上诉状|二审判决书|二审裁定书|执行通知书|执行结案通知)",
     ])
+    # 原告（申请人）
     fields["plaintiff"] = _first_match(text, [
         r"原告[（(]?自然人[）)]?" + sep + r"姓名" + sep + r"([^\s|，,。；;]{1,12}?)(?:性别|出生日期|□|$)",
         r"原告" + sep + r"([^\s|，,。；;]{1,12}?)(?:性别|出生日期|□|被告|$)",
     ])
+    # 被告（被申请人）
     fields["defendant"] = _first_match(text, [
         r"被告[一二三四五六七八九十]?[（(]?自然人[）)]?" + sep + r"姓名" + sep + r"([^\s|，,。；;]{1,12}?)(?:性别|出生日期|□|$)",
         r"被告[一二三四五六七八九十]?" + sep + r"([^\s|，,。；;]{1,12}?)(?:性别|出生日期|□|第三人|$)",
     ])
-    fields["contact_phone"] = _first_match(text, [
-        r"联系电话" + sep + r"(1\d{10})",
-        r"联系电话" + sep + r"(0\d{2,3}-?\d{7,8})",
-    ])
-    fields["id_number"] = _first_match(text, [
-        r"(\d{17}[\dXx])",
-    ])
-    fields["court_time"] = _first_match(text, [
-        r"开庭时间" + sep + r"(\d{4}[-年]\d{1,2}[-月]\d{1,2}日?\s*\d{0,2}:?\d{0,2})",
-        r"应到时间" + sep + r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})",
-    ])
-    fields["court_location"] = _first_match(text, [
-        r"应到处所" + sep + r"([^\s\n，,。；;|]{2,40})",
-        r"受理法院" + sep + r"([^\s\n，,。；;|]{2,40})",
-    ])
-    fields["compensation_amount"] = _first_match(text, [
-        r"标的总额" + sep + r"([\d,，]+\.?\d*)\s*元",
-        r"总计" + sep + r"([\d,，]+\.?\d*)\s*元",
-    ])
+    # 涉及主体（传票类文书提取被传唤人）
     fields["involved_parties"] = _first_match(text, [
         r"被传唤人" + sep + r"([^\s\n，,。；;|]{2,40})",
     ])
+    # 业务类型：从文书关键词推断（尽力而为）
+    fields["case_type_name"] = _first_match(text, [
+        r"(劳动仲裁|民事诉讼|行政诉讼|强制执行|商事仲裁)",
+    ])
+    # 标准案由
+    fields["standard_cause_name"] = _first_match(text, [
+        r"案由" + sep + r"([^\s\n，,。；;|]{2,30})",
+        r"([\u4e00-\u9fa5]{2,12}纠纷)",
+    ])
+    # 受理法院/仲裁委
+    fields["court_name"] = _first_match(text, [
+        r"([\u4e00-\u9fa5]{2,25}(?:人民法院|中级人民法院|基层人民法院|仲裁委员会))",
+    ])
+    # 涉案金额
+    fields["claim_amount"] = _first_match(text, [
+        r"标的总额" + sep + r"([\d,，]+\.?\d*)\s*元",
+        r"总计" + sep + r"([\d,，]+\.?\d*)\s*元",
+        r"合计" + sep + r"([\d,，]+\.?\d*)\s*元",
+    ])
+    # 关键日期（开庭/应到时间）
+    fields["deadline_date"] = _first_match(text, [
+        r"开庭时间" + sep + r"(\d{4}[-年]\d{1,2}[-月]\d{1,2}日?\s*\d{0,2}:?\d{0,2})",
+        r"应到时间" + sep + r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})",
+    ])
     return fields
+
 
 
 # ===================== 主入口 =====================

@@ -3,33 +3,32 @@ from typing import List
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-from models import Case
+from models import LawsuitCase
+from constants import status_to_name
 
 FIELD_MAP = {
     "id": "ID",
-    "delivery_time": "送达时间",
-    "case_number": "案号",
-    "case_type": "案件类型",
-    "involved_parties": "涉及主体",
-    "court_time": "开庭时间",
-    "court_location": "开庭地点",
-    "contact_phone": "联系电话",
-    "plaintiff": "原告",
-    "id_number": "身份证号",
-    "defendant": "被告",
-    "service_client": "服务客户",
-    "stage": "阶段",
-    "client_contact": "客户对接人",
-    "processing_status": "处理情况",
-    "handler": "处理人",
-    "defense_method": "答辩方式",
-    "is_closed": "是否结案",
-    "judgment_result": "判决结果",
-    "compensation_amount": "赔偿金额",
+    "case_no": "案件编号",
+    "court_case_no": "案号",
+    "document_type": "文书类型",
+    "plaintiff": "原告（申请人）",
+    "defendant": "被告（被申请人）",
+    "case_type_name": "业务类型",
+    "standard_cause_name": "标准案由",
+    "court_name": "受理法院/仲裁委",
+    "current_status": "案件状态",
+    "assigned_contact": "对接人",
+    "case_description": "案由描述",
+    "claim_amount": "涉案金额",
+    "deadline_date": "期限日期",
+    "deadline_type": "期限类型",
+    "remark": "备注",
+    "created_by": "创建人",
+    "created_at": "创建时间",
 }
 
 
-def export_to_excel(cases: List[Case], filepath: str = "cases_export.xlsx") -> str:
+def export_to_excel(cases: List[LawsuitCase], filepath: str = "cases_export.xlsx") -> str:
     wb = Workbook()
     ws = wb.active
     ws.title = "案件数据"
@@ -59,10 +58,12 @@ def export_to_excel(cases: List[Case], filepath: str = "cases_export.xlsx") -> s
     for row_idx, case in enumerate(cases, 2):
         for col_idx, key in enumerate(keys, 1):
             value = getattr(case, key, None)
-            if key == "is_closed" and value is not None:
-                value = "是" if value else "否"
-            if key == "compensation_amount" and value is not None:
+            if key == "current_status" and value is not None:
+                value = status_to_name(value)
+            if key == "claim_amount" and value is not None:
                 value = float(value)
+            if key in ("created_at", "updated_at") and value is not None:
+                value = value.strftime("%Y-%m-%d %H:%M:%S")
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="left", vertical="center")
