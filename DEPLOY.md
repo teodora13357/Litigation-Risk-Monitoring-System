@@ -268,7 +268,7 @@ hybrid-engine 依赖 vLLM（需要 CUDA GPU）。在 ⚠️ macOS Docker Desktop
 **8. 上传后返回 `OCR识别失败，建议手动录入`**
 - 检查 `MINERU_API_URL` 是否可访问：`curl http://<MINERU_API_URL>/health`
 - 检查文件是否为受支持的 PDF/图片；损坏文件会在上传校验阶段被拦截
-- 查看后端日志：`docker compose logs -f app` 或本地终端中的 `[OCR]` 日志
+- 查看后端日志：`docker compose logs -f app` 或本地终端日志（结构化输出：`时间 级别 request_id=… user_id=… module=… 消息`，OCR 相关模块名为 `main`/`ocr_tasks`/`ocr_service`）
 
 ### 5.3 ⚠️ macOS 特有
 

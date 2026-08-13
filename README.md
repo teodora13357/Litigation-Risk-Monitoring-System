@@ -92,7 +92,14 @@ python main.py   # 默认监听 127.0.0.1:8000
 
 ```
 demo/
-├── main.py            # 应用入口：FastAPI 实例、路由定义、文件接口
+├── main.py            # 应用入口：FastAPI 实例、启动逻辑、前端页面、挂载路由
+├── app/               # 应用包：按业务域拆分
+│   ├── deps.py        #   依赖注入（get_db / get_current_user）
+│   ├── utils.py       #   共享工具（案号校验 / 案件编号生成）
+│   ├── audit.py       #   审计日志写入
+│   ├── files_config.py#   文件类型配置与上传校验规则
+│   ├── ocr_tasks.py   #   OCR 后台任务（内存任务表 + 识别执行）
+│   └── routers/       #   业务路由：cases / files / recognize / export / auth / audit
 ├── database.py        # PostgreSQL 连接与会话管理（环境变量配置）
 ├── models.py          # ORM 模型（cases 表 + 三类文件表）
 ├── schemas.py         # Pydantic 请求/响应模型
@@ -116,7 +123,7 @@ demo/
 | PUT | `/api/cases/{id}` | 修改案件（部分更新） |
 | DELETE | `/api/cases/{id}` | 删除案件 |
 | GET | `/api/export/excel` | 导出全部案件为 Excel |
-| POST | `/api/recognize` | PDF/图片识别（演示模式，返回模拟字段） |
+| POST | `/api/recognize` | PDF/图片 OCR 识别（真实识别，结构化输出含页码） |
 | POST | `/api/files/upload` | 上传文件（按类型存储，核心文书识别字段） |
 | GET | `/api/cases/{id}/files` | 查看案件所有文件（按类型分组） |
 | GET | `/api/files/preview/{type}/{id}` | 预览文件（PDF/图片，内联显示） |
