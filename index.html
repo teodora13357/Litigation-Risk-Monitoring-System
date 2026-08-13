@@ -155,7 +155,7 @@
             <button class="btn-sm" id="btnLogout" style="display:none;" onclick="logout()">退出登录</button>
             <button class="btn-sm" id="btnSystemSettings" style="display:none;" onclick="alert('系统设置功能待实现')">⚙ 系统设置</button>
             <button class="btn-sm" id="btnUserManagement" style="display:none;" onclick="alert('用户管理功能待实现')">👥 用户管理</button>
-            <button class="btn-sm" id="btnAuditLog" style="display:none;" onclick="alert('审计日志功能待实现')">📋 审计日志</button>
+            <button class="btn-sm" id="btnAuditLog" style="display:none;" onclick="openAuditLogs()">📋 审计日志</button>
 <button class="btn-success" onclick="switchView('files')">📁 案件文件</button>
             <button class="btn-success" onclick="loadData()">刷新</button>
             <button class="btn-warning" onclick="exportExcel()">导出Excel</button>
@@ -289,6 +289,33 @@
     </div>
 </div>
 
+<!-- 审计日志弹窗 -->
+<div class="preview-overlay" id="auditOverlay" style="display:none;" onclick="closeAuditLogs()">
+    <div class="preview-modal" style="width:860px;max-width:94vw;" onclick="event.stopPropagation()">
+        <div class="preview-head">
+            <span style="font-weight:600;">操作审计日志</span>
+            <span style="margin-left:12px;">
+                <select id="auditActionFilter" onchange="loadAuditLogs()" style="padding:4px 6px;font-size:12px;">
+                    <option value="">全部操作</option>
+                    <option value="CREATE">创建</option>
+                    <option value="UPDATE">修改</option>
+                    <option value="DELETE">删除</option>
+                    <option value="LOGIN">登录</option>
+                    <option value="EXPORT">导出</option>
+                </select>
+                <select id="auditTargetFilter" onchange="loadAuditLogs()" style="padding:4px 6px;font-size:12px;margin-left:6px;">
+                    <option value="">全部对象</option>
+                    <option value="CASE">案件</option>
+                    <option value="FILE">文件</option>
+                    <option value="SYSTEM">系统</option>
+                </select>
+            </span>
+            <button class="btn-danger btn-sm" onclick="closeAuditLogs()">关闭</button>
+        </div>
+        <div id="auditBody" class="preview-body" style="max-height:70vh;overflow:auto;"></div>
+    </div>
+</div>
+
     <div class="modal-overlay" id="modalOverlay">
     <div class="modal">
         <h2 id="modalTitle">新增案件</h2>
@@ -303,21 +330,21 @@
 
 <script>
 const FIELDS = [
-    { key: 'case_code',         label: '案件编号',     type: 'readonly', auto: true },
-    { key: 'case_number',       label: '案号',         type: 'text', required: true, placeholder: '(YYYY)法院代码民初/终XXXX号' },
+    { key: 'case_no',           label: '案件编号',     type: 'readonly', auto: true },
+    { key: 'court_case_no',     label: '案号',         type: 'text', required: true, placeholder: '(YYYY)法院代码民初/终XXXX号' },
     { key: 'document_type',     label: '文书类型',     type: 'select', required: true, options: ['应诉通知书','答辩通知书','起诉状','仲裁申请书副本','举证通知书','开庭传票','开庭通知书','判决书（一审）','裁决书（一审）','裁定书','调解书','生效证明','上诉状副本','二审判决书','二审裁定书','执行通知书','执行结案通知','证据材料','程序性附件'] },
     { key: 'plaintiff',         label: '原告（申请人）', type: 'text', required: true, placeholder: '自然人或法人名称' },
     { key: 'defendant',         label: '被告（被申请人）', type: 'text', required: true, placeholder: '自然人或法人名称' },
     { key: 'involved_parties',  label: '涉及主体',     type: 'text', placeholder: '对方当事人详细信息' },
-    { key: 'service_client',    label: '涉及客户',     type: 'search', required: true, placeholder: '选择已有客户或手动输入', options: [] },
-    { key: 'business_type',     label: '业务类型',     type: 'select', required: true, options: ['劳动仲裁','民事诉讼-合同纠纷','民事诉讼-侵权纠纷','强制执行'] },
-    { key: 'standard_cause',    label: '标准案由',     type: 'select', required: true, depends: 'business_type', options: [] },
-    { key: 'accept_court',      label: '受理法院/仲裁委', type: 'text', required: true, placeholder: '机构全称' },
-    { key: 'case_status',       label: '案件状态',     type: 'select', required: true, options: ['立案待处理','已立案/受理中','答辩举证阶段','开庭审理阶段','裁判作出阶段','一审结案','生效结案','二审-答辩举证阶段','二审结案','强制执行阶段','执行结案'] },
-    { key: 'client_contact',    label: '对接人',       type: 'search', options: [], placeholder: '选择或输入对接人' },
-    { key: 'cause_description', label: '案由描述',     type: 'textarea', maxlength: 2000, placeholder: '案件事实简述（最多2000字）' },
-    { key: 'compensation_amount', label: '涉案金额（元）', type: 'number', min: 0 },
-    { key: 'key_dates',         label: '关键日期',     type: 'date', placeholder: '立案/开庭/举证期限' },
+    { key: 'involved_clients',  label: '涉及客户',     type: 'search', placeholder: '选择已有客户或手动输入', options: [] },
+    { key: 'case_type_name',    label: '业务类型',     type: 'select', required: true, options: ['劳动仲裁','民事诉讼-合同纠纷','民事诉讼-侵权纠纷','强制执行'] },
+    { key: 'standard_cause_name', label: '标准案由',   type: 'select', required: true, depends: 'case_type_name', options: [] },
+    { key: 'court_name',        label: '受理法院/仲裁委', type: 'text', required: true, placeholder: '机构全称' },
+    { key: 'current_status',    label: '案件状态',     type: 'select', required: true, options: ['立案待处理','已立案/受理中','答辩举证阶段','开庭审理阶段','裁判作出阶段','一审结案','生效结案','二审-答辩举证阶段','二审结案','强制执行阶段','执行结案'] },
+    { key: 'assigned_contact',  label: '对接人',       type: 'search', options: [], placeholder: '选择或输入对接人' },
+    { key: 'case_description',  label: '案由描述',     type: 'textarea', maxlength: 2000, placeholder: '案件事实简述（最多2000字）' },
+    { key: 'claim_amount',      label: '涉案金额（元）', type: 'number', min: 0 },
+    { key: 'deadline_date',     label: '关键日期',     type: 'date', placeholder: '当前阶段期限日期' },
     { key: 'remark',            label: '备注',         type: 'textarea', maxlength: 5000, placeholder: '其他补充信息（最多5000字）' },
     { key: 'attachment',        label: '附件上传',     type: 'file', accept: '.pdf,.jpg,.jpeg,.png,.bmp,.tiff' },
 ];
@@ -395,11 +422,39 @@ let stageChart = null;
 let closedChart = null;
 let currentSortOrder = 'asc';
 
+// ===== API 封装（自动携带 JWT，401 跳登录页） =====
+function apiFetch(url, options) {
+    options = options || {};
+    const headers = Object.assign({}, options.headers || {});
+    const token = localStorage.getItem('token');
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    return fetch(url, Object.assign({}, options, { headers })).then(function (res) {
+        if (res.status === 401) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('permissions');
+            window.location.href = '/login';
+            throw new Error('未登录或登录已过期');
+        }
+        return res;
+    });
+}
+
+// 用于 <img>/<iframe> 等无法携带请求头资源的场景：先带 token 拉取，再转 blob URL
+function apiBlobUrl(url) {
+    return apiFetch(url)
+        .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.blob();
+        })
+        .then(function (blob) { return URL.createObjectURL(blob); });
+}
+
 // ===================== 数据加载 =====================
 
 async function loadData() {
     try {
-        const res = await fetch('/api/cases');
+        const res = await apiFetch('/api/cases');
         allCases = await res.json();
         renderStats();
         renderTable();
@@ -415,9 +470,10 @@ async function loadData() {
 
 function renderStats() {
     const total = allCases.length;
-    const closed = allCases.filter(c => c.is_closed).length;
+    const CLOSED_STATUSES = ['S6', 'S7', 'S9', 'S11'];
+    const closed = allCases.filter(c => CLOSED_STATUSES.includes(c.current_status)).length;
     const open = total - closed;
-    const totalComp = allCases.reduce((s, c) => s + (c.compensation_amount || 0), 0);
+    const totalComp = allCases.reduce((s, c) => s + Number(c.claim_amount || 0), 0);
 
     document.getElementById('statsRow').innerHTML = `
         <div class="stat-card"><div class="label">总案件数</div><div class="value" style="color:#1a237e">${total}</div></div>
@@ -437,7 +493,7 @@ function renderCharts() {
     // ---- 阶段分布饼图 ----
     const stageCounts = {};
     allCases.forEach(c => {
-        const s = c.stage || '其他';
+        const s = c.current_status_name || c.current_status || '其他';
         stageCounts[s] = (stageCounts[s] || 0) + 1;
     });
     const sLabels = Object.keys(stageCounts);
@@ -467,7 +523,8 @@ function renderCharts() {
     ).join('');
 
     // ---- 结案状态饼图 ----
-    const closedCnt = allCases.filter(c => c.is_closed).length;
+    const CLOSED_STATUSES = ['S6', 'S7', 'S9', 'S11'];
+    const closedCnt = allCases.filter(c => CLOSED_STATUSES.includes(c.current_status)).length;
     const openCnt = allCases.length - closedCnt;
 
     if (closedChart) closedChart.destroy();
@@ -500,11 +557,12 @@ function renderTable() {
 
     let filtered = allCases.filter(c => {
         if (search) {
-            const matches = [c.case_number, c.plaintiff, c.defendant, c.handler, c.case_type, c.service_client]
-                .some(v => v && v.toLowerCase().includes(search));
+            const matches = [c.court_case_no, c.plaintiff, c.defendant, c.assigned_contact, c.case_type_name,
+                c.standard_cause_name, c.court_name, c.current_status_name]
+                .some(v => v && String(v).toLowerCase().includes(search));
             if (!matches) return false;
         }
-        if (statusFilter && c.processing_status !== statusFilter) return false;
+        if (statusFilter && (c.current_status_name || c.current_status) !== statusFilter) return false;
         return true;
     });
 
@@ -532,14 +590,18 @@ function renderTable() {
     }
 
     document.getElementById('tableBody').innerHTML = filtered.map(c => {
-        const color = getStageColor(c.stage);
+        const color = getStageColor(c.current_status_name || '');
         const cells = FIELDS.map(f => {
             let val = c[f.key];
-            if (f.key === 'is_closed') {
-                return `<td>${val ? '<span class="badge badge-closed">已结案</span>' : '<span class="badge badge-open">未结案</span>'}</td>`;
+            if (f.key === 'current_status') {
+                return `<td>${c.current_status_name || c.current_status || '-'}</td>`;
             }
-            if (f.key === 'compensation_amount') {
+            if (f.key === 'claim_amount') {
                 return `<td>${val ? '¥' + Number(val).toLocaleString('zh-CN', {minimumFractionDigits: 2}) : '-'}</td>`;
+            }
+            if (f.key === 'involved_parties' || f.key === 'involved_clients') {
+                const names = Array.isArray(val) ? val.map(p => (p && p.name) || p || '').filter(v => v).join('；') : (val || '-');
+                return `<td>${names}</td>`;
             }
             return `<td>${val ?? '-'}</td>`;
         }).join('');
@@ -557,7 +619,7 @@ function renderTable() {
 function updateStatusFilter() {
     const select = document.getElementById('statusFilter');
     const current = select.value;
-    const statuses = [...new Set(allCases.map(c => c.processing_status).filter(v => v))].sort();
+    const statuses = [...new Set(allCases.map(c => c.current_status_name || c.current_status).filter(v => v))].sort();
     select.innerHTML = '<option value="">全部处理情况</option>' +
         statuses.map(s => `<option value="${s}">${s}</option>`).join('');
     select.value = current;
@@ -582,6 +644,15 @@ function openModal(id) {
     document.getElementById('formGrid').innerHTML = FIELDS.map(f => {
         let dividerHtml = f.divider ? `<div class="form-divider"></div>` : '';
         let val = existing[f.key];
+        // JSONB 数组字段在表单中展示为文本（用分号连接各条 name）
+        if ((f.key === 'involved_parties' || f.key === 'involved_clients') && Array.isArray(val)) {
+            val = val.map(p => (p && p.name) || p || '').filter(v => v).join('；');
+        }
+        // 案件状态：接口返回状态码 + 中文名，表单用中文
+        if (f.key === 'current_status' && val && !Array.isArray(val)) {
+            const nameMap = existing.current_status_name;
+            if (nameMap && String(nameMap).length > 2) val = nameMap;
+        }
         const wide = (f.type === 'textarea') ? ' full' : '';
         const reqMark = f.required ? ' <span style="color:red">*</span>' : '';
         const reqAttr = f.required ? ' required' : '';
@@ -589,7 +660,7 @@ function openModal(id) {
         let fieldHtml = '';
         if (f.type === 'select') {
             let optsArr = f.options || [];
-            if (f.depends === 'business_type') {
+            if (f.depends === 'case_type_name') {
                 const parentVal = existing[f.depends] || '';
                 optsArr = (CAUSE_MAP[parentVal] || []).map(c => c.value);
             }
@@ -633,8 +704,8 @@ function closeModal() {
 }
 
 function updateCauses() {
-    const biz = document.getElementById('field_business_type');
-    const sel = document.getElementById('field_standard_cause');
+    const biz = document.getElementById('field_case_type_name');
+    const sel = document.getElementById('field_standard_cause_name');
     if (biz === null || biz === undefined || sel === null || sel === undefined) return;
     const causes = CAUSE_MAP[biz.value] || [];
     sel.innerHTML = causes.map(c => '<option value= + c.value + >' + c.value + '</option>').join('');
@@ -643,8 +714,8 @@ function updateCauses() {
     }
 }
 function updateContactByClient() {
-    const clientEl = document.getElementById('field_service_client');
-    const contactEl = document.getElementById('field_client_contact');
+    const clientEl = document.getElementById('field_involved_clients');
+    const contactEl = document.getElementById('field_assigned_contact');
     if (clientEl === null || clientEl === undefined || contactEl === null || contactEl === undefined) return;
     const clientName = (clientEl.value || '').trim();
     const contact = CLIENT_CONTACT_MAP[clientName];
@@ -654,7 +725,7 @@ function updateContactByClient() {
 }
 function updateStatusByDoc() {
     const docEl = document.getElementById('field_document_type');
-    const statusEl = document.getElementById('field_case_status');
+    const statusEl = document.getElementById('field_current_status');
     if (docEl === null || docEl === undefined || statusEl === null || statusEl === undefined) return;
     const doc = docEl.value;
     const statuses = DOC_STATUS_MAP[doc];
@@ -663,8 +734,8 @@ function updateStatusByDoc() {
     }
 }
 document.getElementById('formGrid').addEventListener('change', function(e) {
-    if (e.target && e.target.id === 'field_business_type') updateCauses();
-    if (e.target && e.target.id === 'field_service_client') updateContactByClient();
+    if (e.target && e.target.id === 'field_case_type_name') updateCauses();
+    if (e.target && e.target.id === 'field_involved_clients') updateContactByClient();
     if (e.target && e.target.id === 'field_document_type') updateStatusByDoc();
 });
 
@@ -675,7 +746,11 @@ async function saveCase() {
         const el = document.getElementById(`field_${f.key}`);
         let val = el.value;
         if (f.type === 'number') val = parseFloat(val) || 0;
-        if (f.key === 'is_closed') val = (val === 'true');
+        if (f.key === 'involved_parties' || f.key === 'involved_clients') {
+            // 文本输入 -> JSONB 数组 [{name, ...}]（分号/逗号分隔多条）
+            const names = String(val || '').split(/[；;，,]/).map(s => s.trim()).filter(Boolean);
+            val = names.length ? names.map(n => ({ name: n })) : null;
+        }
         data[f.key] = val;
     });
 
@@ -690,7 +765,7 @@ async function saveCase() {
     const method = editingId ? 'PUT' : 'POST';
 
     try {
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
             method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
         });
         if (res.ok) {
@@ -703,7 +778,7 @@ async function saveCase() {
                     fd.append('doc_type', 'procedural_notice');
                     fd.append('uploader', '手动录入');
                     fd.append('case_id', saved.id);
-                    await fetch('/api/v1/files/upload', { method: 'POST', body: fd });
+                    await apiFetch('/api/v1/files/upload', { method: 'POST', body: fd });
                 } catch (err) {
                     console.error('附件上传失败', err);
                 }
@@ -769,7 +844,7 @@ function validateForm() {
 async function deleteCase(id) {
     if (!confirm('确认删除此案件？')) return;
     try {
-        const res = await fetch(`/api/cases/${id}`, { method: 'DELETE' });
+        const res = await apiFetch(`/api/cases/${id}`, { method: 'DELETE' });
         if (res.ok) loadData();
         else alert('删除失败');
     } catch (e) {
@@ -778,7 +853,23 @@ async function deleteCase(id) {
 }
 
 function exportExcel() {
-    window.open('/api/export/excel', '_blank');
+    // 带 token 下载（导出接口已鉴权）
+    apiFetch('/api/export/excel')
+        .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.blob();
+        })
+        .then(function (blob) {
+            const a = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            a.href = url;
+            a.download = 'cases_export.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
+        .catch(function (e) { alert('导出失败: ' + e.message); });
 }
 
 // Click overlay to close modal
@@ -791,20 +882,36 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Escape') closeModal();
 });
 
-// ===================== PDF/图片识别（演示模式） =====================
+// ===================== PDF/图片识别（真实 OCR，MinerU） =====================
 
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 let recognizedData = null;
 
 const RECOGNIZE_FIELD_LABELS = {
-    case_number: '案号', case_type: '案件类型', involved_parties: '涉及主体',
-    delivery_time: '送达时间', court_time: '开庭时间', court_location: '开庭地点',
-    contact_phone: '联系电话', plaintiff: '原告', id_number: '身份证号',
-    defendant: '被告', service_client: '服务客户', stage: '阶段',
-    client_contact: '客户对接人', processing_status: '处理情况', handler: '处理人',
-    defense_method: '答辩方式', is_closed: '是否结案', judgment_result: '判决结果',
-    compensation_amount: '赔偿金额'
+    // 新表单字段（LawsuitCase）
+    court_case_no: '案号', document_type: '文书类型', plaintiff: '原告',
+    defendant: '被告', involved_parties: '涉及主体', involved_clients: '涉及客户',
+    case_type_name: '业务类型', standard_cause_name: '标准案由', court_name: '受理法院/仲裁委',
+    current_status: '案件状态', assigned_contact: '对接人', case_description: '案由描述',
+    claim_amount: '涉案金额', remark: '备注',
+    // OCR 旧键兼容（ocr_service 迁移到新字段后移除）
+    case_number: '案号', case_type: '业务类型', service_client: '涉及客户',
+    client_contact: '对接人', processing_status: '案件状态', compensation_amount: '涉案金额',
+    standard_cause: '标准案由', accept_court: '受理法院/仲裁委', cause_description: '案由描述',
+};
+
+// OCR 识别结果键 -> 新表单字段键（过渡映射）
+const OCR_TO_FORM_KEY_MAP = {
+    case_number: 'court_case_no',
+    case_type: 'case_type_name',
+    service_client: 'involved_clients',
+    client_contact: 'assigned_contact',
+    processing_status: 'current_status',
+    compensation_amount: 'claim_amount',
+    standard_cause: 'standard_cause_name',
+    accept_court: 'court_name',
+    cause_description: 'case_description',
 };
 
 dropZone.addEventListener('click', () => fileInput.click());
@@ -907,12 +1014,12 @@ function removeFile(index) {
 
 async function loadCasesIntoRecognizeCase() {
     try {
-        const res = await fetch('/api/cases');
+        const res = await apiFetch('/api/cases');
         const cases = await res.json();
         const sel = document.getElementById('recognizeCaseId');
         const current = sel.value;
         sel.innerHTML = '<option value="">所属案件（可选）</option>' +
-            cases.map(c => '<option value="' + c.id + '">' + (c.case_number || '案件' + c.id) + '</option>').join('');
+            cases.map(c => '<option value="' + c.id + '">' + (c.court_case_no || '案件' + c.id) + '</option>').join('');
         sel.value = current;
     } catch (e) {
         console.error('加载案件列表失败', e);
@@ -952,6 +1059,8 @@ function uploadOne(it, index, docType, uploader, caseId, resultEl, prEl) {
         fd.append('doc_type', docType);
         fd.append('uploader', uploader);
         if (caseId) fd.append('case_id', caseId);
+        const token = localStorage.getItem('token');
+        if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
         const progRow = document.getElementById('fileProg_' + index);
         const progBar = progRow.querySelector('.file-progress-bar');
         progRow.style.display = 'block';
@@ -1005,7 +1114,7 @@ function pollOcrResult(it, data, resultEl, prEl) {
     const maxTries = 120; // 2s * 120 ≈ 4 分钟
     let tries = 0;
     const timer = setInterval(function () {
-        fetch('/api/files/' + docType + '/' + fileId + '/ocr')
+        apiFetch('/api/files/' + docType + '/' + fileId + '/ocr')
             .then(function (r) { return r.json(); })
             .then(function (st) {
                 tries++;
@@ -1081,7 +1190,9 @@ function applyRecognition() {
     const formData = {};
     for (const [k, v] of Object.entries(recognizedData.recognized_fields || {})) {
         if (v === null || v === undefined || v === '') continue;
-        formData[k] = v;
+        // OCR 旧键 -> 新表单键（过渡映射）
+        const formKey = OCR_TO_FORM_KEY_MAP[k] || k;
+        formData[formKey] = v;
     }
     prefillData = formData;
     openModal(null);
@@ -1109,11 +1220,11 @@ function switchView(view) {
 
 async function loadCasesIntoSelector() {
     try {
-        const res = await fetch('/api/cases');
+        const res = await apiFetch('/api/cases');
         const cases = await res.json();
         const sel = document.getElementById('caseSelector');
         sel.innerHTML = '<option value="">-- 请选择案件 --</option>' +
-            cases.map(c => '<option value="' + c.id + '">' + (c.case_number || '案件' + c.id) + '</option>').join('');
+            cases.map(c => '<option value="' + c.id + '">' + (c.court_case_no || '案件' + c.id) + '</option>').join('');
         loadCaseFiles(sel.value);
     } catch (e) {
         alert('加载案件列表失败: ' + e.message);
@@ -1123,7 +1234,7 @@ async function loadCasesIntoSelector() {
 async function loadCaseFiles(caseId) {
     if (caseId === '') return;
     try {
-        const res = await fetch('/api/cases/' + caseId + '/files');
+        const res = await apiFetch('/api/cases/' + caseId + '/files');
         if (res.ok === false) throw new Error('加载失败(' + res.status + ')');
         const data = await res.json();
         renderFileTree(data.files || {});
@@ -1181,17 +1292,81 @@ function previewFile(type, id, mime) {
     document.getElementById('previewTitle').textContent = '文件预览';
     const body = document.getElementById('previewBody');
     const url = '/api/files/preview/' + type + '/' + id;
-    if (mime && mime.indexOf('image') >= 0) {
-        body.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:70vh;display:block;margin:0 auto;">';
-    } else {
-        body.innerHTML = '<iframe src="' + url + '" style="width:100%;height:70vh;border:none;"></iframe>';
-    }
+    body.innerHTML = '<div style="text-align:center;padding:24px;color:#888;">加载中…</div>';
     document.getElementById('previewOverlay').style.display = 'flex';
+    apiBlobUrl(url)
+        .then(function (blobUrl) {
+            if (mime && mime.indexOf('image') >= 0) {
+                body.innerHTML = '<img src="' + blobUrl + '" style="max-width:100%;max-height:70vh;display:block;margin:0 auto;">';
+            } else {
+                body.innerHTML = '<iframe src="' + blobUrl + '" style="width:100%;height:70vh;border:none;"></iframe>';
+            }
+        })
+        .catch(function (e) {
+            body.innerHTML = '<div style="text-align:center;padding:24px;color:#d32f2f;">预览失败: ' + e.message + '</div>';
+        });
 }
 
 function closePreview() {
     document.getElementById('previewOverlay').style.display = 'none';
     document.getElementById('previewBody').innerHTML = '';
+}
+
+// ===== 审计日志 =====
+function openAuditLogs() {
+    document.getElementById('auditOverlay').style.display = 'flex';
+    loadAuditLogs();
+}
+
+function closeAuditLogs() {
+    document.getElementById('auditOverlay').style.display = 'none';
+    document.getElementById('auditBody').innerHTML = '';
+}
+
+const AUDIT_ACTION_LABELS = { CREATE: '创建', UPDATE: '修改', DELETE: '删除', LOGIN: '登录', EXPORT: '导出' };
+const AUDIT_TARGET_LABELS = { CASE: '案件', FILE: '文件', MAPPING: '匹配', SYSTEM: '系统' };
+
+function loadAuditLogs() {
+    const action = document.getElementById('auditActionFilter').value;
+    const target = document.getElementById('auditTargetFilter').value;
+    let url = '/api/audit-logs?limit=200';
+    if (action) url += '&action_type=' + encodeURIComponent(action);
+    if (target) url += '&target_type=' + encodeURIComponent(target);
+    apiFetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (logs) {
+            const body = document.getElementById('auditBody');
+            if (!logs || !logs.length) {
+                body.innerHTML = '<div style="text-align:center;padding:24px;color:#888;">暂无审计日志</div>';
+                return;
+            }
+            const rows = logs.map(function (log) {
+                const detail = log.action_detail ? JSON.stringify(log.action_detail) : '';
+                return '<tr>' +
+                    '<td>' + (log.created_at || '-') + '</td>' +
+                    '<td>' + (log.user_name || log.user_id || '-') + '</td>' +
+                    '<td>' + (AUDIT_ACTION_LABELS[log.action_type] || log.action_type) + '</td>' +
+                    '<td>' + (AUDIT_TARGET_LABELS[log.target_type] || log.target_type) + '</td>' +
+                    '<td>' + (log.target_id || '-') + '</td>' +
+                    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + detail.replace(/"/g, '&quot;') + '">' + (detail || '-') + '</td>' +
+                    '<td>' + (log.ip_address || '-') + '</td>' +
+                    '</tr>';
+            }).join('');
+            body.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+                '<thead><tr style="background:#f5f5f5;">' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">时间</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">用户</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">操作</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">对象</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">对象ID</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">详情</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">IP</th>' +
+                '</tr></thead><tbody>' + rows + '</tbody></table>' +
+                '<div style="text-align:right;padding:8px;color:#888;font-size:12px;">共 ' + logs.length + ' 条（最近 200 条）</div>';
+        })
+        .catch(function (e) {
+            document.getElementById('auditBody').innerHTML = '<div style="text-align:center;padding:24px;color:#d32f2f;">加载审计日志失败: ' + e.message + '</div>';
+        });
 }
 
 // ===== 登录状态与权限控制 =====
