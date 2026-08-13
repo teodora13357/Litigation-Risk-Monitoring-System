@@ -22,7 +22,6 @@ MISSING_REQUIRED_FIELD = 40002      # 必填字段缺失
 # ===== 认证（50xxx） =====
 AUTH_FAILED = 50001                 # 认证失败
 PERMISSION_DENIED = 50002           # 权限不足
-ACCOUNT_LOCKED = 50003              # 帐户已锁定
 
 ERROR_MESSAGES = {
     FILE_FORMAT_NOT_SUPPORTED: "文件格式不支持",
@@ -35,7 +34,6 @@ ERROR_MESSAGES = {
     MISSING_REQUIRED_FIELD: "必填字段缺失",
     AUTH_FAILED: "认证失败",
     PERMISSION_DENIED: "权限不足",
-    ACCOUNT_LOCKED: "帐户已锁定",
 }
 
 
