@@ -5,8 +5,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-import models
-from database import get_db
+from app import models
+from app.database import get_db
 from app.deps import get_current_user
 
 router = APIRouter()

@@ -11,11 +11,11 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
-import crud
-import error_codes
-import models
-from database import get_db
-from error_codes import BizError
+from app import crud
+from app import error_codes
+from app import models
+from app.database import get_db
+from app.error_codes import BizError
 from app.audit import write_audit_log
 from app.deps import get_current_user
 from app.files_config import DOC_TYPE_MAP, CATEGORY_TO_DOCTYPE, ALLOWED_EXTS, MAX_FILE_SIZE, UPLOAD_DIR

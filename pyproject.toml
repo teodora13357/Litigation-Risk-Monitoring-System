@@ -41,12 +41,7 @@ ocr = [
 ]
 
 [tool.setuptools]
-py-modules = [
-    "main",
-    "database",
-    "models",
-    "schemas",
-    "crud",
-    "excel_export",
-    "ocr_service",
-]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app", "app.*"]

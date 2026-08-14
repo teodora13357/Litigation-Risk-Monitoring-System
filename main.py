@@ -13,12 +13,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-import app_logging
-import auth
-import constants
-import error_codes
-import models
-from database import SessionLocal, engine
+from app import logging as app_logging
+from app import auth, constants, error_codes, models
+from app.database import SessionLocal, engine
 from app.routers import cases as cases_router
 from app.routers import files as files_router
 from app.routers import recognize as recognize_router

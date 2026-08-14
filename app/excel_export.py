@@ -3,8 +3,8 @@ from typing import List
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
-from models import LawsuitCase
-from constants import status_to_name
+from app.models import LawsuitCase
+from app.constants import status_to_name
 
 FIELD_MAP = {
     "id": "ID",

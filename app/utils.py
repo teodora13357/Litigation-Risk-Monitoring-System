@@ -7,9 +7,9 @@ from datetime import datetime
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-import error_codes
-from error_codes import BizError
-from models import LawsuitCase
+from app import error_codes
+from app.error_codes import BizError
+from app.models import LawsuitCase
 
 _CASE_NUMBER_RE = re.compile(r"^\(\d{4}\)[^()（）\s]+民(初|终)\d{4}号$")
 

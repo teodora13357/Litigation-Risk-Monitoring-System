@@ -7,10 +7,10 @@ from sqlalchemy import pool
 from alembic import context
 
 # 加载项目模型（注册到 Base.metadata）
-import database  # noqa: F401
-import models  # noqa: F401
+from app import database  # noqa: F401
+from app import models  # noqa: F401
 
-from database import Base  # noqa: E402
+from app.database import Base  # noqa: E402
 
 config = context.config
 

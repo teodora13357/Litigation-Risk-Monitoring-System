@@ -1,12 +1,12 @@
-"""文件识别路由：PDF/图片 OCR（真实识别，见 ocr_service.py）。"""
+"""文件识别路由：PDF/图片 OCR（真实识别，见 app/ocr_service.py）。"""
 
 import os
 import tempfile
 
 from fastapi import APIRouter, Depends, File, UploadFile
 
-import models
-import ocr_service
+from app import models
+from app import ocr_service
 from app.deps import get_current_user
 
 router = APIRouter()

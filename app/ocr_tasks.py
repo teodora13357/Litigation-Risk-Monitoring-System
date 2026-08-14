@@ -8,10 +8,10 @@
 import os
 from datetime import datetime
 
-import app_logging
-import models
-import ocr_service
-from database import SessionLocal
+from app import logging as app_logging
+from app import models
+from app import ocr_service
+from app.database import SessionLocal
 from app.files_config import UPLOAD_DIR
 
 logger = app_logging.get_logger("ocr_tasks")

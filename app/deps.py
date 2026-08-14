@@ -4,9 +4,9 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
-from database import get_db  # noqa: F401  —— 直接复用数据库模块的 get_db
-import auth
-import models
+from app.database import get_db  # noqa: F401  —— 直接复用数据库模块的 get_db
+from app import auth
+from app import models
 
 bearer_scheme = HTTPBearer(auto_error=False)
 

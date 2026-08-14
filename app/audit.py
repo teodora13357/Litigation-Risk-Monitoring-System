@@ -3,8 +3,8 @@
 from fastapi import Request
 from sqlalchemy.orm import Session
 
-import app_logging
-import models
+from app import logging as app_logging
+from app import models
 
 logger = app_logging.get_logger("audit")
 

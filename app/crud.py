@@ -2,8 +2,8 @@ from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
-import models
-import schemas
+from app import models
+from app import schemas
 
 
 # ============================================================
@@ -109,7 +109,7 @@ def add_case_key_date(
     remark: Optional[str] = None,
 ) -> "models.CaseKeyDate":
     """向案件关键日期时间线追加一条记录（date_type_name 从 constants 取中文名）。"""
-    from constants import DATE_TYPE
+    from app.constants import DATE_TYPE
 
     db_item = models.CaseKeyDate(
         case_id=case_id,
