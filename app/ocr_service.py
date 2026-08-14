@@ -467,11 +467,18 @@ def _extract_key_fields(text: str) -> dict:
         r"总计" + sep + r"([\d,，]+\.?\d*)\s*元",
         r"合计" + sep + r"([\d,，]+\.?\d*)\s*元",
     ])
-    # 关键日期（开庭/应到时间）
-    fields["deadline_date"] = _first_match(text, [
+    # 关键日期（开庭/应到时间）：提取后归一化为 YYYY-MM-DD [HH:MM]（OCR 可能丢失日期与时间间的空格）
+    raw_date = _first_match(text, [
         r"开庭时间" + sep + r"(\d{4}[-年]\d{1,2}[-月]\d{1,2}日?\s*\d{0,2}:?\d{0,2})",
         r"应到时间" + sep + r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2}:\d{2})",
     ])
+    if raw_date:
+        dm = re.search(r"(\d{4})[-年](\d{1,2})[-月](\d{1,2})日?", raw_date)
+        if dm:
+            date_part = f"{dm.group(1)}-{int(dm.group(2)):02d}-{int(dm.group(3)):02d}"
+            tm = re.search(r"(\d{1,2})[:：](\d{2})", raw_date)
+            fields["deadline_date"] = f"{date_part} {tm.group(1)}:{tm.group(2)}" if tm else date_part
+
     return fields
 
 
