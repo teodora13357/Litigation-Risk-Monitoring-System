@@ -98,6 +98,10 @@
 .chip-label { color: #2e7d32; font-weight: 600; }
 .chip-value { color: #555; }
 .result-actions { display: flex; gap: 10px; }
+    /* 临时调试：OCR 结构化文本展示 */
+.ocr-text-wrap { margin-top: 12px; border: 1px dashed #90caf9; border-radius: 6px; padding: 8px 10px; background: #f8faff; }
+.ocr-text-tabs { display: flex; gap: 8px; margin-bottom: 6px; }
+.ocr-text-pre { max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.6; background: #fafafa; border: 1px solid #eee; border-radius: 4px; padding: 10px; margin: 0; color: #333; }
     /* 案件文件管理 */
 .files-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
 .files-header h2 { margin: 0; color: #1a237e; }
@@ -202,6 +206,14 @@
             <span id="resultFileInfo" style="font-weight:400;color:#666;font-size:12px;"></span>
         </div>
         <div id="resultFields" class="result-fields"></div>
+        <div id="ocrTextWrap" class="ocr-text-wrap" style="display:none;">
+            <div style="font-weight:600;color:#1a237e;font-size:13px;margin-bottom:6px;">📄 OCR 结构化文本（临时调试）</div>
+            <div class="ocr-text-tabs">
+                <button class="btn-sm" onclick="showOcrTextMode('text')">纯文本</button>
+                <button class="btn-sm" onclick="showOcrTextMode('markdown')">Markdown</button>
+            </div>
+            <pre id="ocrStructuredText" class="ocr-text-pre"></pre>
+        </div>
         <div class="result-actions">
             <button class="btn-primary" onclick="applyRecognition()">应用到表单并编辑</button>
             <button class="btn-sm btn-warning" onclick="clearRecognition()">清除</button>
@@ -887,6 +899,7 @@ document.addEventListener('keydown', e => {
 const dropZone = document.getElementById('dropZone');
 const fileInput = document.getElementById('fileInput');
 let recognizedData = null;
+let _ocrTextData = null;
 
 const RECOGNIZE_FIELD_LABELS = {
     // 新表单字段（LawsuitCase）
@@ -894,7 +907,7 @@ const RECOGNIZE_FIELD_LABELS = {
     defendant: '被告', involved_parties: '涉及主体', involved_clients: '涉及客户',
     case_type_name: '业务类型', standard_cause_name: '标准案由', court_name: '受理法院/仲裁委',
     current_status: '案件状态', assigned_contact: '对接人', case_description: '案由描述',
-    claim_amount: '涉案金额', remark: '备注',
+    claim_amount: '涉案金额', deadline_date: '关键日期', remark: '备注',
     // OCR 旧键兼容（ocr_service 迁移到新字段后移除）
     case_number: '案号', case_type: '业务类型', service_client: '涉及客户',
     client_contact: '对接人', processing_status: '案件状态', compensation_amount: '涉案金额',
@@ -1054,6 +1067,7 @@ async function startFileProcessing() {
 function uploadOne(it, index, docType, uploader, caseId, resultEl, prEl) {
     return new Promise(function (resolve) {
         const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/files/upload');
         const fd = new FormData();
         fd.append('file', it.file);
         fd.append('doc_type', docType);
@@ -1102,7 +1116,6 @@ function uploadOne(it, index, docType, uploader, caseId, resultEl, prEl) {
             renderFileList();
             resolve(false);
         };
-        xhr.open('POST', '/api/files/upload');
         xhr.send(fd);
     });
 }
@@ -1155,6 +1168,9 @@ function showRecognitionResult(data) {
     document.getElementById('recognizeStatus').style.display = 'none';
     const resultEl = document.getElementById('recognizeResult');
     resultEl.style.display = 'block';
+    // 临时调试：重置结构化文本展示区
+    _ocrTextData = null;
+    document.getElementById('ocrTextWrap').style.display = 'none';
     const ocr = data.ocr_result;
     if (ocr && (ocr.status === 'pending' || ocr.status === 'running')) {
         // OCR 仍在处理
@@ -1183,6 +1199,14 @@ function showRecognitionResult(data) {
         chip.innerHTML = '<span class="chip-label">' + label + '</span><span class="chip-value">' + value + '</span>';
         box.appendChild(chip);
     }
+    // 临时调试：展示 OCR 结构化文本
+    const ocrRes = data.ocr_result || {};
+    const ocrWrap = document.getElementById('ocrTextWrap');
+    if (ocrRes.structured_text || ocrRes.markdown) {
+        _ocrTextData = { text: ocrRes.structured_text || '', markdown: ocrRes.markdown || '' };
+        ocrWrap.style.display = '';
+        showOcrTextMode('text');
+    }
 }
 
 function applyRecognition() {
@@ -1192,7 +1216,15 @@ function applyRecognition() {
         if (v === null || v === undefined || v === '') continue;
         // OCR 旧键 -> 新表单键（过渡映射）
         const formKey = OCR_TO_FORM_KEY_MAP[k] || k;
-        formData[formKey] = v;
+        let value = v;
+        // date normalize for YYYY-MM-DD input
+        if (formKey === 'deadline_date') {
+            const m = String(v).match(/(\d{4})[-年](\d{1,2})[-月](\d{1,2})日?/);
+            if (m) {
+                value = m[1] + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[3]).padStart(2, '0');
+            }
+        }
+        formData[formKey] = value;
     }
     prefillData = formData;
     openModal(null);
@@ -1200,8 +1232,15 @@ function applyRecognition() {
 
 function clearRecognition() {
     recognizedData = null;
+    _ocrTextData = null;
     document.getElementById('recognizeResult').style.display = 'none';
     document.getElementById('recognizeStatus').style.display = 'none';
+}
+
+function showOcrTextMode(mode) {
+    if (!_ocrTextData) return;
+    document.getElementById('ocrStructuredText').textContent =
+        mode === 'markdown' ? (_ocrTextData.markdown || '（无 Markdown）') : (_ocrTextData.text || '（无纯文本）');
 }
 
 // ===================== 案件文件管理 =====================
