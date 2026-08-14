@@ -3,8 +3,9 @@
 > 本项目主要在 **macOS** 上开发，本文档同时覆盖：
 > - **macOS 本地开发部署**（推荐日常开发）
 > - **Linux 服务器 Docker Compose 部署**（推荐生产）
+> - **Windows（Docker Desktop / WSL2）部署**（见第四章方案 C）
 >
-> 所有 macOS 特有事项均已标注 ⚠️，请在 macOS 上部署时特别留意。
+> 所有 macOS / Windows 特有事项均已标注 ⚠️，请在对应平台部署时特别留意。
 
 ---
 
@@ -197,6 +198,49 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 # 访问 http://127.0.0.1:8000
 ```
 
+### 方案 C：Windows（Docker Desktop / WSL2）部署
+
+> 适用于 Windows 10 22H2+ / Windows 11（x86_64）。MinerU OCR 仅能以 Linux 容器运行，
+> 因此 Windows 部署必须使用 Docker Desktop（WSL2 后端）；若不需要 OCR，可只启动 app + postgres + redis。
+
+```powershell
+# 1. 安装并配置环境（一次性）
+#    - 开启 WSL2：管理员 PowerShell 执行 `wsl --install` 后重启
+#    - 安装 Docker Desktop：Settings → General 勾选 "Use the WSL 2 based engine"
+#    - 建议在 %UserProfile%\.wslconfig 写入 [wsl2] → memory=8GB（MinerU 内存需求）
+
+# 2. 克隆项目（仓库已提供 .gitattributes，检出 LF，无需担心 CRLF）
+git clone <仓库地址>; cd demo_olof
+
+# 3. 运行部署预检脚本（环境识别 + 端口排查 + MinerU 补丁，PowerShell 兼容）
+python scripts/deploy_preflight.py --patch
+
+# 4. 准备 .env（务必修改 PG_PASSWORD 与 SECRET_KEY）
+Copy-Item .env.example .env
+
+# 5. 构建并启动（app + postgres + redis）
+docker compose up -d --build
+
+# 6. （可选）启动 MinerU OCR 服务（首次需先启动容器再执行上面的 --patch）
+docker compose --profile ocr up -d
+
+# 7. 验证
+docker compose ps
+curl http://127.0.0.1:8000/
+curl http://127.0.0.1:30000/health
+```
+
+> 部署预检脚本（`scripts/deploy_preflight.py`）说明：
+> - 自动识别 PowerShell / bash 环境，Windows 下端口排查使用 `netstat + tasklist`，POSIX 使用 `lsof`；
+> - MinerU 补丁通过 `docker exec -i ... python3 -` 的 **stdin 注入**方式执行，不使用 bash heredoc，PowerShell 下无需改写；
+> - 补丁幂等：重复执行输出 `already patched`；补丁只写入运行中的容器，容器重建后需重新执行 `--patch`。
+
+⚠️ Windows 注意事项：
+1. **Docker Desktop 商业许可**：企业商用需付费订阅，可改用 WSL2 内的 Docker Engine（docker-ce）。
+2. **端口冲突**：compose 发布 8000 / 5432 / 6379 / 30000，若本机已有原生 PostgreSQL（5432）或 IIS（8000）等，`docker compose up` 会报 `port is already allocated`。用预检脚本或 `netstat -ano | findstr :<端口>` 排查。
+3. **PowerShell 控制台中文乱码**（仅影响日志显示）：先执行 `chcp 65001`。
+4. 容器重建后 MinerU 补丁会丢失，重新执行：`python scripts/deploy_preflight.py --patch`。
+
 ---
 
 ## 五、常见问题排查
@@ -257,13 +301,15 @@ docker restart mineru-dev    # 或 docker compose --profile ocr restart mineru
 ```
 
 > ⚠️ 补丁只写入运行中的容器，容器重建后需重新应用。也可在 `docker run` 后用上述命令执行一次。
+>
+> 💡 **Windows / PowerShell 用户**：无需手工执行上面 `<<'PY'` 的 heredoc（bash 语法，PowerShell 不兼容）。直接运行 `python scripts/deploy_preflight.py --patch` 即可自动完成环境识别、备份、打补丁、语法校验与容器重启。
 
 **6. OCR 报 `Device string must not be empty` / `AsyncEngineArgs got an unexpected keyword argument 'device'`**
 hybrid-engine 依赖 vLLM（需要 CUDA GPU）。在 ⚠️ macOS Docker Desktop（无 GPU）或纯 CPU 环境下不可用。
-解决：`ocr_service.py` 已默认使用 **pipeline 后端**，请勿将请求或 MinerU 启动参数改为 hybrid-engine。
+解决：`app/ocr_service.py` 已默认使用 **pipeline 后端**，请勿将请求或 MinerU 启动参数改为 hybrid-engine。
 
 **7. OCR 识别文字乱码（如 `l. j j llun` 之类）**
-多为提交的图像格式问题。**必须使用 PNG 无损格式**——`ocr_service.py` 已内置该处理。若自建脚本，请勿用 JPEG 提交页图像。
+多为提交的图像格式问题。**必须使用 PNG 无损格式**——`app/ocr_service.py` 已内置该处理。若自建脚本，请勿用 JPEG 提交页图像。
 
 **8. 上传后返回 `OCR识别失败，建议手动录入`**
 - 检查 `MINERU_API_URL` 是否可访问：`curl http://<MINERU_API_URL>/health`
@@ -282,7 +328,7 @@ MinerU 容器基于 vllm-openai 镜像，默认无 `python` 软链，请用 `pyt
 macOS 默认无 GNU `timeout`。请用 `gtimeout`（`brew install coreutils`）或 Python 脚本实现超时。
 
 **12. `fitz`/`pymupdf` 导入告警**
-新版 PyMuPDF 弃用 `import fitz`。`ocr_service.py` 已优先 `import pymupdf`，并兼容旧包名。若自写脚本请同样处理。
+新版 PyMuPDF 弃用 `import fitz`。`app/ocr_service.py` 已优先 `import pymupdf`，并兼容旧包名。若自写脚本请同样处理。
 
 **13. 端口 8000 被占用（常见于本机已有其它 Web 服务）**
 ```bash

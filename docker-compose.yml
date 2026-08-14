@@ -22,7 +22,7 @@ services:
       POSTGRES_DB: ${PG_DB:-case_management}
     ports:
       # 仅本机可访问，避免数据库端口暴露到公网
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:15432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
@@ -39,7 +39,7 @@ services:
     restart: unless-stopped
     # 当前 Redis 为预留缓存模块，未配置密码；如需密码请设置并同步 REDIS_URL
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:16379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -82,7 +82,7 @@ services:
       OCR_BINARIZE: ${OCR_BINARIZE:-auto}
       OCR_TEXT_MIN_CHARS: ${OCR_TEXT_MIN_CHARS:-30}
     ports:
-      - "8000:8000"
+      - "18080:8000"
     volumes:
       # 上传文件持久化：避免容器重建丢失已上传文件
       - upload_data:/app/static/uploads
