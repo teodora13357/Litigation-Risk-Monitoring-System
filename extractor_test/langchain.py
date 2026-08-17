@@ -79,7 +79,8 @@ model = ChatOpenAI(
     base_url="http://192.168.10.250:8006",
     api_key="None",
     model="Qwen3.6-27B",
-    max_tokens=4096,
+    max_tokens=None,
+    temperature=0,
     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
 )
 
@@ -273,7 +274,7 @@ def main():
     result = get_parse_result(task_id)
 
     query1 = str(result.get("results"))
-    NUM_VOTES = 5
+    NUM_VOTES = 20
 
     agent_executor = make_agent()
 
@@ -287,7 +288,7 @@ def main():
     need_parse = str(cls.get("是否需解析") or "").strip()
     print("分类结果:", json.dumps(cls, ensure_ascii=False))
 
-    # 第二步：按类型加载 skill 提取（生成 5 次，逐字段取众数）
+    # 第二步：按类型加载 skill 提取（生成 NUM_VOTES 次，逐字段取众数）
     skill_name = skill_for_doc_type(doc_type)
     if skill_name is None or not need_parse.lower().startswith(("是", "true", "1")):
         print("无需提取或未知类型:", doc_type, need_parse)

@@ -1,0 +1,158 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "应诉通知书 / 参加诉讼通知书字段提取",
+  "description": "按固定 JSON 结构提取应诉/参加诉讼通知书字段",
+  "type": "object",
+  "oneOf": [
+    {
+      "title": "应诉通知书 / 参加诉讼通知书字段提取 - 正常解析结果",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "案号",
+        "原告/申请人",
+        "被告/被申请人",
+        "涉及主体",
+        "业务类型",
+        "标准案由",
+        "受理法院/仲裁委",
+        "立案日期",
+        "提取说明"
+      ],
+      "properties": {
+        "案号": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "完整案号 或 null"
+        },
+        "原告/申请人": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "实体名称列表；未识别到则为 null"
+        },
+        "被告/被申请人": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "实体名称列表；未识别到则为 null"
+        },
+        "涉及主体": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "实体名称列表；未识别到则为 null"
+        },
+        "业务类型": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "业务类型 或 null"
+        },
+        "标准案由": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "标准案由 或 null"
+        },
+        "受理法院/仲裁委": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "法院/仲裁委全称 或 null"
+        },
+        "立案日期": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "YYYY-MM-DD 或 null"
+        },
+        "提取说明": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "案号",
+            "原告/申请人",
+            "被告/被申请人",
+            "涉及主体",
+            "业务类型",
+            "标准案由",
+            "受理法院/仲裁委",
+            "立案日期"
+          ],
+          "properties": {
+            "案号": {
+              "type": "string",
+              "enum": [
+                "已提取",
+                "未命中案号"
+              ],
+              "description": "已提取 | 未命中案号"
+            },
+            "原告/申请人": {
+              "type": "string",
+              "description": "已提取N个 | 未命中触发词 | 触发词命中但未识别到实体"
+            },
+            "被告/被申请人": {
+              "type": "string",
+              "description": "已提取N个 | 未命中触发词 | 触发词命中但未识别到实体"
+            },
+            "涉及主体": {
+              "type": "string",
+              "description": "已提取N个 | 无可识别主体"
+            },
+            "业务类型": {
+              "type": "string",
+              "description": "已提取:由标准案由反查 | 无法根据已有信息推断 | 未匹配到已知案由"
+            },
+            "标准案由": {
+              "type": "string",
+              "description": "已提取:命中关键词XXX | 未匹配到已知案由"
+            },
+            "受理法院/仲裁委": {
+              "type": "string",
+              "description": "已提取:从案号还原 | 已提取:全文匹配 | 未命中；层级:基层|中级|高级|最高|仲裁委"
+            },
+            "立案日期": {
+              "type": "string",
+              "description": "已提取:YYYY-MM-DD | 未命中触发词 | 触发词命中但未匹配到日期"
+            }
+          }
+        }
+      }
+    },
+    {
+      "title": "应诉通知书 / 参加诉讼通知书字段提取 - 不在解析范围内",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "错误"
+      ],
+      "properties": {
+        "错误": {
+          "type": "string",
+          "const": "该文书不在可解析范围内"
+        }
+      }
+    }
+  ]
+}

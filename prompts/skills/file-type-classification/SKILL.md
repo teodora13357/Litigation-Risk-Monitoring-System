@@ -1,5 +1,5 @@
 ---
-name: document-type-classification
+name: file-type-classification
 description: 判断法律文书类型，仅做类型识别，不做字段提取和状态机匹配等后续处理。用于区分"需完整解析的9类文书"与"仅归档存储的材料"。
 ---
 
