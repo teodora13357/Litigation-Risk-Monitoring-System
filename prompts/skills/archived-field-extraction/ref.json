@@ -28,145 +28,370 @@
       ],
       "properties": {
         "案号": {
-          "type": [
-            "string",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "description": "完整案号 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "完整案号 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "原告/申请人": {
-          "type": [
-            "array",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "items": {
-            "type": "string"
-          },
-          "description": "实体名称列表；未识别到则为 null"
-        },
-        "被告/被申请人": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "description": "实体名称列表；未识别到则为 null"
-        },
-        "涉及主体": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          },
-          "description": "实体名称列表；未识别到则为 null"
-        },
-        "涉及客户": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "客户名称 或 null"
-        },
-        "业务类型": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "业务类型 或 null"
-        },
-        "标准案由": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "标准案由 或 null"
-        },
-        "受理法院/仲裁委": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "法院/仲裁委全称 或 null"
-        },
-        "代理人信息": {
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "姓名"
-            ],
-            "properties": {
-              "姓名": {
+          "properties": {
+            "value": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
                 "type": "string"
               },
-              "律所": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "身份": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
+              "description": "实体名称列表；未识别到则为 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
             }
-          },
-          "description": "代理人列表；未识别到则为 null"
+          }
+        },
+        "被告/被申请人": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "实体名称列表；未识别到则为 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "涉及主体": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              },
+              "description": "实体名称列表；未识别到则为 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "涉及客户": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "客户名称 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "业务类型": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "业务类型 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "标准案由": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "标准案由 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "受理法院/仲裁委": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "法院/仲裁委全称 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
+        },
+        "代理人信息": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "姓名"
+                ],
+                "properties": {
+                  "姓名": {
+                    "type": "string"
+                  },
+                  "律所": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "身份": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "description": "代理人列表；未识别到则为 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "标的额": {
-          "type": [
-            "number",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "description": "数值(元) 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "数值(元) 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "赔偿金": {
-          "type": [
-            "number",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "description": "数值(元) 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "数值(元) 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "诉讼请求金额": {
-          "type": [
-            "number",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "description": "数值(元) 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "数值(元) 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "立案日期": {
-          "type": [
-            "string",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "description": "YYYY-MM-DD 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "YYYY-MM-DD 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "开庭日期": {
-          "type": [
-            "string",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "description": "YYYY-MM-DD 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "YYYY-MM-DD 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "裁判日期": {
-          "type": [
-            "string",
-            "null"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "description": "YYYY-MM-DD 或 null"
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+              "description": "YYYY-MM-DD 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "提取说明": {
           "type": "object",

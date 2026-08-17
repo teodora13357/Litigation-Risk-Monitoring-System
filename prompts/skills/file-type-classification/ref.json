@@ -15,20 +15,65 @@
       ],
       "properties": {
         "文书类型": {
-          "type": "string",
-          "description": "类型名称 或 证据材料/程序性附件具体类型 或 未知类型"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "类型名称 或 证据材料/程序性附件具体类型 或 未知类型"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "是否需解析": {
-          "type": "string",
-          "enum": [
-            "是",
-            "否"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
           ],
-          "description": "是 | 否"
+          "properties": {
+            "value": {
+              "type": "string",
+              "enum": [
+                "是",
+                "否"
+              ],
+              "description": "是 | 否"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         },
         "判定依据": {
-          "type": "string",
-          "description": "命中的关键词列表 或 匹配的材料类别 或 未匹配任何类型"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": "string",
+              "description": "命中的关键词列表 或 匹配的材料类别 或 未匹配任何类型"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+            }
+          }
         }
       }
     },
