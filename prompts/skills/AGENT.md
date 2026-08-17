@@ -6,7 +6,7 @@
 3. 除指定字段外，不得输出任何推理结果、分析意见或额外内容。
 4. 若需要以表格形式展示结果，必须以 Markdown 表格格式输出。
 执行流程
-1. 先加载并遵循 document-type-classification 技能，对文书进行类型判定（仅判定类型，不进行字段提取）。
+1. 先加载并遵循 file-type-classification 技能，对文书进行类型判定（仅判定类型，不进行字段提取）。
 2. 根据类型判定结果，从下列 skill 中选择且仅选择对应一个执行字段提取，严格按所选 skill 定义的输出格式（固定 JSON 结构）返回提取结果，不添加任何额外说明：
     - complaint-arbitration-extract — 起诉状 / 仲裁申请书
     - evidence-notice-extract — 举证通知书

@@ -2,7 +2,7 @@
 
 本目录存放法律文书解析的提示词技能（Prompt Skills），供大模型在文书识别流程中加载执行。整体遵循「先判型、再提取」的两段式设计：
 
-1. **类型判定**：`document-type-classification` 先判定文书类型（仅判定，不提取字段）
+1. **类型判定**：`file-type-classification` 先判定文书类型（仅判定，不提取字段）
 2. **分类型提取**：根据判定结果，选择且仅选择对应的一个提取技能，按固定 JSON 结构输出字段
 
 编排规则见 [AGENT.md](./AGENT.md)。
@@ -13,7 +13,7 @@
 skills/
 ├── AGENT.md                             # 总控提示词：类型判定 → 分发到对应提取技能
 ├── README.md                            # 本说明文件
-├── document-type-classification/        # 文书类型判定（9 类可解析文书 vs 仅归档材料）
+├── file-type-classification/        # 文书类型判定（9 类可解析文书 vs 仅归档材料）
 ├── complaint-arbitration-extract/       # 起诉状 / 仲裁申请书字段提取
 ├── evidence-notice-extract/             # 举证通知书字段提取
 ├── judgment-ruling-mediation-extract/   # 判决书 / 裁定书 / 调解书字段提取
@@ -27,7 +27,7 @@ skills/
 
 | 技能 | 适用文书 | 提取字段数 | 说明 |
 | ---- | ---- | ---- | ---- |
-| `document-type-classification` | 全部 | - | 仅判定类型，区分「需完整解析的 9 类文书」与「仅归档存储的材料」 |
+| `file-type-classification` | 全部 | - | 仅判定类型，区分「需完整解析的 9 类文书」与「仅归档存储的材料」 |
 | `complaint-arbitration-extract` | 起诉状 / 仲裁申请书副本 | 8 | 原告/申请人、被告/被申请人、涉及主体、业务类型、标准案由、受理法院/仲裁委、标的额、诉讼请求金额 |
 | `evidence-notice-extract` | 举证通知书 | 7 | 案号、被告/被申请人、涉及主体、受理法院/仲裁委、标准案由、业务类型、举证期限 |
 | `judgment-ruling-mediation-extract` | 判决书 / 裁定书 / 调解书 | 11 | 案号、当事人、涉及主体、受理法院/仲裁委、业务类型、标准案由、标的额、赔偿金、诉讼请求金额、裁判结果等 |
