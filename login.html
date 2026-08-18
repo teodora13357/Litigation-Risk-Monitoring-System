@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - 诉讼监控系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, PingFang SC, Microsoft YaHei, sans-serif;
+            background: linear-gradient(135deg, #1a237e 0%, #283593 50%, #3949ab 100%);
+            min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        }
+        .login-card { background: #fff; border-radius: 16px; padding: 48px 40px; width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+        .logo { text-align: center; margin-bottom: 32px; }
+        .logo-icon { font-size: 48px; margin-bottom: 12px; }
+        .logo h1 { font-size: 24px; color: #1a237e; font-weight: 700; }
+        .logo .logo-sub { font-size: 13px; color: #999; margin-top: 4px; }
+        .form-item { margin-bottom: 20px; position: relative; }
+        .form-item input { width: 100%; padding: 12px 14px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; outline: none; transition: border-color .2s; }
+        .form-item input:focus { border-color: #3949ab; }
+        .pwd-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 13px; color: #3949ab; padding: 4px 8px; }
+        .form-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; font-size: 13px; }
+        .form-row label { color: #666; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .form-row a { color: #3949ab; text-decoration: none; }
+        .login-btn { width: 100%; padding: 12px; background: #3949ab; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: opacity .2s; }
+        .login-btn:hover { opacity: .85; }
+        .error-msg { margin-top: 16px; padding: 10px 12px; background: #ffebee; color: #c62828; border-radius: 6px; font-size: 13px; text-align: center; display: none; }
+    </style>
+</head>
+<body>
+    <div class="login-card">
+        <div class="logo">
+            <div class="logo-icon">⚖️</div>
+            <h1>诉讼监控系统</h1>
+            <div class="logo-sub">法律案件智能监控与归档平台</div>
+        </div>
+        <form id="loginForm">
+            <div class="form-item">
+                <input type="text" id="username" placeholder="用户名或手机号码" autocomplete="username">
+            </div>
+            <div class="form-item">
+                <input type="password" id="password" placeholder="密码" autocomplete="current-password">
+                <button type="button" class="pwd-toggle" id="pwdToggle" onclick="togglePassword()">显示</button>
+            </div>
+            <div class="form-row">
+                <label><input type="checkbox" id="remember"> 记住我（7天免登录）</label>
+                <a href="#" onclick="forgotPassword()">忘记密码</a>
+            </div>
+            <button type="submit" class="login-btn" id="loginBtn">登 录</button>
+            <div class="error-msg" id="errorMsg"></div>
+        </form>
+    </div>
+    <script>
+        function togglePassword() {
+            const pwd = document.getElementById('password');
+            const btn = document.getElementById('pwdToggle');
+            if (pwd.type === 'password') { pwd.type = 'text'; btn.textContent = '隐藏'; }
+            else { pwd.type = 'password'; btn.textContent = '显示'; }
+        }
+        function forgotPassword() {
+            alert('忘记密码功能暂未开放');
+        }
+        function showError(msg) {
+            const el = document.getElementById('errorMsg');
+            el.textContent = msg;
+            el.style.display = 'block';
+        }
+        document.getElementById('loginForm').addEventListener('submit', async function (e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const remember = document.getElementById('remember').checked;
+            if (username === '' || password === '') { showError('请输入用户名和密码'); return; }
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true; btn.textContent = '登录中...';
+            try {
+                const res = await fetch('/api/v1/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username: username, password: password, remember: remember })
+                });
+                const data = await res.json();
+                if (data.code === 0) {
+                    localStorage.setItem('token', data.data.token);
+                    localStorage.setItem('user', JSON.stringify(data.data.user));
+                    localStorage.setItem('token_expires_in', data.data.expires_in);
+                    localStorage.setItem('permissions', JSON.stringify(data.data.permissions || []));
+                    window.location.href = '/';
+                } else {
+                    showError(data.message || '用户名或密码错误');
+                }
+            } catch (err) {
+                showError('网络错误，请稍后重试');
+            } finally {
+                btn.disabled = false; btn.textContent = '登 录';
+            }
+        });
+        if (localStorage.getItem('token')) { window.location.href = '/'; }
+    </script>
+</body>
+</html>

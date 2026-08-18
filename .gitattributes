@@ -1,0 +1,13 @@
+# 统一 LF 换行：避免 Windows 检出 CRLF 破坏 Dockerfile / shell 脚本
+* text=auto eol=lf
+
+# 二进制文件不参与换行转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.xlsx binary
+*.ico binary
+*.woff binary
+*.woff2 binary

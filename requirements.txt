@@ -1,0 +1,4 @@
+# 依赖统一由 pyproject.toml 管理
+# 开发安装: pip install -e .
+# 生产安装: pip install .
+-e .

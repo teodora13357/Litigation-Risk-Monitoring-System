@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "case-management"
+version = "1.0.0"
+description = "法律案件管理系统 - 案件管理、文件识别与归档"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openpyxl",
+    "sqlalchemy",
+    "pydantic",
+    "python-multipart",
+    "psycopg2-binary",
+    "redis",
+    "pypdf",
+    "pyjwt",
+    "requests",
+    "pillow",
+    "opencv-python-headless",
+    "numpy",
+    "pymupdf",
+    "alembic",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "httpx",
+]
+ocr = [
+    "pdfplumber",
+    "pytesseract",
+    "pillow",
+    "langchain-openai",
+    "langchain-community",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app", "app.*"]

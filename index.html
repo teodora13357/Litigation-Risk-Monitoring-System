@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>案件管理系统</title>
+    <script src="/static/chart.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+                'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #f0f2f5; color: #333; min-height: 100vh;
+        }
+        .container { max-width: 1500px; margin: 0 auto; padding: 20px; }
+
+        /* Header */
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+        .header h1 { font-size: 26px; color: #1a237e; }
+        .header-actions button { margin-left: 10px; }
+
+        /* Stats */
+        .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+        .stat-card { background: #fff; border-radius: 10px; padding: 18px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .stat-card .label { font-size: 13px; color: #999; margin-bottom: 6px; }
+        .stat-card .value { font-size: 30px; font-weight: 700; }
+
+        /* Charts */
+        .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+        .chart-card { background: #fff; border-radius: 10px; padding: 20px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .chart-card h3 { font-size: 16px; margin-bottom: 8px; color: #555; }
+        .chart-wrapper { position: relative; height: 300px; }
+        .legend { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 10px; }
+        .legend-item { display: flex; align-items: center; gap: 5px; font-size: 13px; color: #666; }
+        .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+
+        /* Table */
+        .table-card { background: #fff; border-radius: 10px; padding: 20px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); }
+        .table-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .table-toolbar input { padding: 8px 14px; border: 1px solid #ddd; border-radius: 6px; width: 280px; font-size: 14px; }
+        .filter-controls { display: flex; gap: 10px; align-items: center; }
+        .filter-controls select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; cursor: pointer; background: #fff; }
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        thead th { background: #4472C4; color: #fff; padding: 10px 14px; text-align: left; white-space: nowrap; position: sticky; top: 0; z-index: 1; }
+        tbody td { padding: 8px 14px; border-bottom: 1px solid #eee; white-space: nowrap; }
+        tbody tr:hover { opacity: 0.82; }
+
+        /* Badge */
+        .badge { display: inline-block; padding: 2px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .badge-closed { background: #c8e6c9; color: #2e7d32; }
+        .badge-open { background: #ffcdd2; color: #c62828; }
+
+        /* Buttons */
+        button { padding: 8px 18px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; transition: opacity .2s; }
+        button:hover { opacity: .82; }
+        .btn-primary { background: #4472C4; color: #fff; }
+        .btn-success { background: #43a047; color: #fff; }
+        .btn-danger { background: #e53935; color: #fff; }
+        .btn-warning { background: #ff9800; color: #fff; }
+        .btn-sm { padding: 4px 12px; font-size: 12px; }
+
+        /* Modal */
+        .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 1000;
+            justify-content: center; align-items: flex-start; padding-top: 40px; overflow-y: auto; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: #fff; border-radius: 10px; padding: 28px; width: 720px; max-width: 92%; max-height: 86vh; overflow-y: auto; }
+        .modal h2 { margin-bottom: 22px; color: #1a237e; }
+        .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group.full { grid-column: 1 / -1; }
+        .form-divider { grid-column: 1 / -1; height: 1px; background: #e0e0e0; margin: 16px 0 0; }
+        .form-group label { font-size: 13px; color: #666; margin-bottom: 5px; }
+        .form-group input, .form-group select, .form-group textarea {
+            padding: 8px 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 14px; font-family: inherit;
+        }
+        .form-group textarea { resize: vertical; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
+
+        .empty { text-align: center; padding: 48px; color: #aaa; }
+    /* 文件识别上传卡片 */
+.upload-card { background: #fff; border-radius: 10px; padding: 20px 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); margin-bottom: 16px; }
+.upload-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.upload-toolbar h3 { font-size: 16px; color: #1a237e; margin: 0; }
+.upload-hint { font-size: 13px; color: #999; }
+.drop-zone { border: 2px dashed #4472C4; border-radius: 10px; padding: 30px 20px; text-align: center; cursor: pointer; transition: all .2s; background: #f8faff; }
+.drop-zone:hover, .drop-zone.dragging { border-color: #ff9800; background: #fff8e1; }
+.drop-icon { font-size: 32px; margin: 0 0 6px; }
+.drop-zone p { margin: 4px 0; color: #666; font-size: 14px; }
+.drop-zone .drop-sub { font-size: 12px; color: #aaa; }
+.link { color: #4472C4; text-decoration: underline; }
+.recognize-status { margin-top: 14px; padding: 14px 16px; background: #f5f5f5; border-radius: 8px; font-size: 13px; color: #555; }
+.step-item { padding: 2px 0; color: #2e7d32; font-size: 13px; }
+.recognize-result { margin-top: 14px; padding: 14px 16px; background: #e8f5e9; border-radius: 8px; }
+.result-head { display: flex; justify-content: space-between; align-items: center; font-size: 14px; font-weight: 600; color: #1a237e; margin-bottom: 10px; }
+.result-fields { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.field-chip { background: #fff; border: 1px solid #c8e6c9; border-radius: 6px; padding: 4px 10px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+.chip-label { color: #2e7d32; font-weight: 600; }
+.chip-value { color: #555; }
+.result-actions { display: flex; gap: 10px; }
+    /* 临时调试：OCR 结构化文本展示 */
+.ocr-text-wrap { margin-top: 12px; border: 1px dashed #90caf9; border-radius: 6px; padding: 8px 10px; background: #f8faff; }
+.ocr-text-tabs { display: flex; gap: 8px; margin-bottom: 6px; }
+.ocr-text-pre { max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; font-size: 12px; line-height: 1.6; background: #fafafa; border: 1px solid #eee; border-radius: 4px; padding: 10px; margin: 0; color: #333; }
+    /* 案件文件管理 */
+.files-header { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
+.files-header h2 { margin: 0; color: #1a237e; }
+.file-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; background: #fff; padding: 12px 16px; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,0.05); flex-wrap: wrap; }
+.file-toolbar label { font-size: 14px; color: #555; }
+.file-toolbar select { padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; min-width: 280px; }
+.upload-panel { background: #fff; padding: 14px 16px; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,0.05); margin-bottom: 16px; }
+.upload-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.upload-row input[type=file] { border: 1px solid #ddd; padding: 6px; border-radius: 6px; font-size: 13px; }
+.upload-row select, .upload-row input[type=text] { padding: 7px 10px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+.upload-result { margin-top: 10px; font-size: 13px; }
+.upload-ok { color: #2e7d32; background: #e8f5e9; padding: 8px 12px; border-radius: 6px; margin-bottom: 6px; }
+.upload-note { color: #888; padding: 4px 0; }
+.upload-err { color: #c62828; background: #ffebee; padding: 8px 12px; border-radius: 6px; }
+.upload-fields { margin-top: 6px; color: #555; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.file-tree { background: #fff; border-radius: 8px; box-shadow: 0 1px 6px rgba(0,0,0,0.05); padding: 8px 16px; }
+.tree-type-head { padding: 10px 6px; cursor: pointer; font-weight: 600; color: #333; border-bottom: 1px solid #f0f0f0; user-select: none; }
+.tree-arrow { display: inline-block; width: 16px; color: #999; }
+.tree-files { padding: 6px 0 10px 24px; }
+.tree-empty { color: #aaa; padding: 8px 4px; font-size: 13px; }
+.file-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border: 1px solid #eee; border-radius: 6px; margin: 6px 0; background: #fafafa; }
+.file-name { font-size: 14px; color: #333; }
+.file-meta { font-size: 12px; color: #888; margin-top: 3px; }
+.file-actions button { white-space: nowrap; }
+/* 预览模态框 */
+.preview-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 2000; display: flex; align-items: center; justify-content: center; }
+.preview-modal { background: #fff; border-radius: 10px; width: 90%; max-width: 1000px; max-height: 88vh; display: flex; flex-direction: column; overflow: hidden; }
+.preview-head { display: flex; justify-content: space-between; align-items: center; padding: 12px 18px; border-bottom: 1px solid #eee; }
+.preview-body { padding: 10px; overflow: auto; }
+    /* 多文件上传 */
+.file-list { margin-top: 10px; }
+.file-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border: 1px solid #eee; border-radius: 6px; margin: 4px 0; font-size: 13px; background: #fafafa; flex-wrap: wrap; }
+.file-row-name { flex: 1; min-width: 160px; color: #333; }
+.file-row-size { color: #999; white-space: nowrap; }
+.file-status-ok { color: #2e7d32; white-space: nowrap; }
+.file-status-error { color: #c62828; white-space: nowrap; }
+.file-status-done { color: #1976d2; white-space: nowrap; }
+.file-progress { width: 100%; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden; }
+.file-progress-bar { height: 100%; background: #4472C4; width: 0%; transition: width .2s; }
+.drop-zone.dragging { border-color: #43a047; background: #e8f5e9; transform: scale(1.01); box-shadow: 0 4px 16px rgba(67,160,71,0.25); }
+.upload-actions { margin-top: 10px; display: flex; gap: 10px; align-items: center; }
+/* 表单校验错误样式 */
+.form-group input.error, .form-group select.error, .form-group textarea.error { border-color: #e53935 !important; background: #fff5f5; }
+.form-error-msg { color: #e53935; font-size: 12px; margin-top: 4px; display: none; }
+.form-error-msg.show { display: block; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div id="mainView">
+    <div class="header">
+        <h1>案件管理系统</h1>
+        <div class="header-actions">
+            <span id="userInfo" style="display:none;margin-right:6px;font-size:13px;color:#666;"></span>
+            <button class="btn-sm" id="btnLogout" style="display:none;" onclick="logout()">退出登录</button>
+            <button class="btn-sm" id="btnSystemSettings" style="display:none;" onclick="alert('系统设置功能待实现')">⚙ 系统设置</button>
+            <button class="btn-sm" id="btnUserManagement" style="display:none;" onclick="alert('用户管理功能待实现')">👥 用户管理</button>
+            <button class="btn-sm" id="btnAuditLog" style="display:none;" onclick="openAuditLogs()">📋 审计日志</button>
+<button class="btn-success" onclick="switchView('files')">📁 案件文件</button>
+            <button class="btn-success" onclick="loadData()">刷新</button>
+            <button class="btn-warning" onclick="exportExcel()">导出Excel</button>
+        </div>
+    </div>
+
+    <!-- 文件识别上传卡片 -->
+<div class="upload-card">
+    <div class="upload-toolbar">
+                <button class="btn-primary" onclick="openModal()">📝 手动录入</button>
+<h3>📄 PDF / 图片智能识别录入</h3>
+        <span class="upload-hint">拖拽文件到下方区域，或点击选择文件</span>
+    </div>
+    <div id="dropZone" class="drop-zone">
+        <div class="drop-icon">📂</div>
+<p>拖拽 PDF / 图片 到此处（可多选），或 <span class="link">点击选择文件</span></p>
+        <p class="drop-sub">支持 .pdf / .jpg / .jpeg / .png / .bmp / .tiff，单个≤50MB，一次最多10个</p>
+        <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.bmp,.tiff" multiple hidden>
+    </div>
+    <div id="fileProcessPanel" class="upload-panel" style="display:none;">
+<div class="upload-row">
+            <span id="selectedFileName" style="font-size:13px;color:#555;"></span>
+        </div>
+        <div id="fileList" class="file-list"></div>
+<div class="upload-actions">
+            <button class="btn-success" onclick="startFileProcessing()">🚀 上传文件</button>
+            <button class="btn-sm" onclick="clearSelectedFiles()">清空列表</button>
+        </div>
+        <div class="upload-row" style="margin-top:8px;">
+            <select id="recognizeDocType">
+                <option value="core_document">核心法定文书（识别字段）</option>
+                <option value="evidence">证据材料（仅存储）</option>
+                <option value="procedural_notice">程序性告知附件（仅存储）</option>
+            </select>
+            <input type="text" id="recognizeUploader" placeholder="上传人" style="width:120px;">
+            <select id="recognizeCaseId"><option value="">所属案件（可选）</option></select>
+        </div>
+        <div id="recognizeProcessResult" class="upload-result"></div>
+    </div>
+<div id="recognizeStatus" class="recognize-status" style="display:none;"></div>
+    <div id="recognizeResult" class="recognize-result" style="display:none;">
+        <div class="result-head">
+            <span>识别到的字段</span>
+            <span id="resultFileInfo" style="font-weight:400;color:#666;font-size:12px;"></span>
+        </div>
+        <div id="resultFields" class="result-fields"></div>
+        <div id="ocrTextWrap" class="ocr-text-wrap" style="display:none;">
+            <div style="font-weight:600;color:#1a237e;font-size:13px;margin-bottom:6px;">📄 OCR 结构化文本（临时调试）</div>
+            <div class="ocr-text-tabs">
+                <button class="btn-sm" onclick="showOcrTextMode('text')">纯文本</button>
+                <button class="btn-sm" onclick="showOcrTextMode('markdown')">Markdown</button>
+            </div>
+            <pre id="ocrStructuredText" class="ocr-text-pre"></pre>
+        </div>
+        <div class="result-actions">
+            <button class="btn-primary" onclick="applyRecognition()">应用到表单并编辑</button>
+            <button class="btn-sm btn-warning" onclick="clearRecognition()">清除</button>
+        </div>
+    </div>
+</div>
+
+    <div class="stats-row" id="statsRow"></div>
+
+    <div class="charts-row">
+        <div class="chart-card">
+            <h3>案件阶段分布</h3>
+            <div class="chart-wrapper"><canvas id="stageChart"></canvas></div>
+            <div class="legend" id="stageLegend"></div>
+        </div>
+        <div class="chart-card">
+            <h3>结案状态分布</h3>
+            <div class="chart-wrapper"><canvas id="closedChart"></canvas></div>
+        </div>
+    </div>
+
+    <div class="table-card">
+        <div class="table-toolbar">
+            <input type="text" id="searchBox" placeholder="搜索案号、原告、被告、处理人..." oninput="renderTable()">
+            <div class="filter-controls">
+                <select id="statusFilter" onchange="renderTable()">
+                    <option value="">全部处理情况</option>
+                </select>
+                <select id="sortBy" onchange="renderTable()">
+                    <option value="">默认排序</option>
+                    <option value="delivery_time">按送达时间</option>
+                    <option value="court_time">按开庭时间</option>
+                </select>
+                <button id="sortOrderBtn" onclick="toggleSortOrder()" class="btn-sm btn-primary">↑ 升序</button>
+            </div>
+        </div>
+        <div class="table-container">
+            <table>
+                <thead id="tableHead"></thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+    </div>
+
+<!-- Modal -->
+
+    <div id="filesView" style="display:none;">
+    <div class="files-header">
+        <button class="btn-sm btn-primary" onclick="switchView(&#39;main&#39;)">← 返回案件列表</button>
+        <h2>📁 案件文件管理</h2>
+    </div>
+    <div class="file-toolbar">
+        <label>选择案件：</label>
+        <select id="caseSelector" onchange="loadCaseFiles(this.value)">
+            <option value="">-- 请选择案件 --</option>
+        </select>
+        <button class="btn-sm btn-primary" onclick="loadCaseFiles(document.getElementById(&#39;caseSelector&#39;).value)">刷新</button>
+    </div>
+    <div class="file-tree" id="fileTree">
+        <div class="tree-type" data-type="core_document">
+            <div class="tree-type-head" onclick="toggleType(&#39;core_document&#39;)"><span class="tree-arrow">▸</span> 📄 核心法定文书 <span id="count_core_document" style="color:#999;font-weight:400;font-size:12px;"></span></div>
+            <div class="tree-files" id="files_core_document"></div>
+        </div>
+        <div class="tree-type" data-type="evidence">
+            <div class="tree-type-head" onclick="toggleType(&#39;evidence&#39;)"><span class="tree-arrow">▸</span> 📎 证据材料 <span id="count_evidence" style="color:#999;font-weight:400;font-size:12px;"></span></div>
+            <div class="tree-files" id="files_evidence"></div>
+        </div>
+        <div class="tree-type" data-type="procedural_notice">
+            <div class="tree-type-head" onclick="toggleType(&#39;procedural_notice&#39;)"><span class="tree-arrow">▸</span> 📋 程序性告知附件 <span id="count_procedural_notice" style="color:#999;font-weight:400;font-size:12px;"></span></div>
+            <div class="tree-files" id="files_procedural_notice"></div>
+        </div>
+    </div>
+</div>
+
+<!-- 文件预览模态框 -->
+<div class="preview-overlay" id="previewOverlay" style="display:none;" onclick="closePreview()">
+    <div class="preview-modal" onclick="event.stopPropagation()">
+        <div class="preview-head">
+            <span id="previewTitle" style="font-weight:600;"></span>
+            <button class="btn-danger btn-sm" onclick="closePreview()">关闭</button>
+        </div>
+        <div id="previewBody" class="preview-body"></div>
+    </div>
+</div>
+
+<!-- 审计日志弹窗 -->
+<div class="preview-overlay" id="auditOverlay" style="display:none;" onclick="closeAuditLogs()">
+    <div class="preview-modal" style="width:860px;max-width:94vw;" onclick="event.stopPropagation()">
+        <div class="preview-head">
+            <span style="font-weight:600;">操作审计日志</span>
+            <span style="margin-left:12px;">
+                <select id="auditActionFilter" onchange="loadAuditLogs()" style="padding:4px 6px;font-size:12px;">
+                    <option value="">全部操作</option>
+                    <option value="CREATE">创建</option>
+                    <option value="UPDATE">修改</option>
+                    <option value="DELETE">删除</option>
+                    <option value="LOGIN">登录</option>
+                    <option value="EXPORT">导出</option>
+                </select>
+                <select id="auditTargetFilter" onchange="loadAuditLogs()" style="padding:4px 6px;font-size:12px;margin-left:6px;">
+                    <option value="">全部对象</option>
+                    <option value="CASE">案件</option>
+                    <option value="FILE">文件</option>
+                    <option value="SYSTEM">系统</option>
+                </select>
+            </span>
+            <button class="btn-danger btn-sm" onclick="closeAuditLogs()">关闭</button>
+        </div>
+        <div id="auditBody" class="preview-body" style="max-height:70vh;overflow:auto;"></div>
+    </div>
+</div>
+
+    <div class="modal-overlay" id="modalOverlay">
+    <div class="modal">
+        <h2 id="modalTitle">新增案件</h2>
+        <div class="form-grid" id="formGrid"></div>
+        <div class="modal-actions">
+            <button class="btn-danger" onclick="closeModal()">取消</button>
+            <button class="btn-warning" onclick="saveDraft()">💾 保存草稿</button>
+            <button class="btn-primary" onclick="saveCase()">保存</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const FIELDS = [
+    { key: 'case_no',           label: '案件编号',     type: 'readonly', auto: true },
+    { key: 'court_case_no',     label: '案号',         type: 'text', required: true, placeholder: '(YYYY)法院代码民初/终XXXX号' },
+    { key: 'document_type',     label: '文书类型',     type: 'select', required: true, options: ['应诉通知书','答辩通知书','起诉状','仲裁申请书副本','举证通知书','开庭传票','开庭通知书','判决书（一审）','裁决书（一审）','裁定书','调解书','生效证明','上诉状副本','二审判决书','二审裁定书','执行通知书','执行结案通知','证据材料','程序性附件'] },
+    { key: 'plaintiff',         label: '原告（申请人）', type: 'text', required: true, placeholder: '自然人或法人名称' },
+    { key: 'defendant',         label: '被告（被申请人）', type: 'text', required: true, placeholder: '自然人或法人名称' },
+    { key: 'involved_parties',  label: '涉及主体',     type: 'text', placeholder: '对方当事人详细信息' },
+    { key: 'involved_clients',  label: '涉及客户',     type: 'search', placeholder: '选择已有客户或手动输入', options: [] },
+    { key: 'case_type_name',    label: '业务类型',     type: 'select', required: true, options: ['劳动仲裁','民事诉讼-合同纠纷','民事诉讼-侵权纠纷','强制执行'] },
+    { key: 'standard_cause_name', label: '标准案由',   type: 'select', required: true, depends: 'case_type_name', options: [] },
+    { key: 'court_name',        label: '受理法院/仲裁委', type: 'text', required: true, placeholder: '机构全称' },
+    { key: 'current_status',    label: '案件状态',     type: 'select', required: true, options: ['立案待处理','已立案/受理中','答辩举证阶段','开庭审理阶段','裁判作出阶段','一审结案','生效结案','二审-答辩举证阶段','二审结案','强制执行阶段','执行结案'] },
+    { key: 'assigned_contact',  label: '对接人',       type: 'search', options: [], placeholder: '选择或输入对接人' },
+    { key: 'case_description',  label: '案由描述',     type: 'textarea', maxlength: 2000, placeholder: '案件事实简述（最多2000字）' },
+    { key: 'claim_amount',      label: '涉案金额（元）', type: 'number', min: 0 },
+    { key: 'deadline_date',     label: '关键日期',     type: 'date', placeholder: '当前阶段期限日期' },
+    { key: 'remark',            label: '备注',         type: 'textarea', maxlength: 5000, placeholder: '其他补充信息（最多5000字）' },
+    { key: 'attachment',        label: '附件上传',     type: 'file', accept: '.pdf,.jpg,.jpeg,.png,.bmp,.tiff' },
+];
+
+const CAUSE_MAP = {
+    '劳动仲裁': [
+        { value: '确认劳动关系纠纷', desc: '确认双方是否存在劳动关系' },
+        { value: '追索劳动报酬纠纷', desc: '要求支付工资、加班费等' },
+        { value: '工伤保险待遇纠纷', desc: '工伤认定及赔偿' },
+        { value: '经济补偿金纠纷', desc: '解除/终止合同的经济补偿' },
+        { value: '新就业形态用工合同纠纷', desc: '平台用工争议' },
+    ],
+    '民事诉讼-合同纠纷': [
+        { value: '劳务合同纠纷', desc: '个人之间或单位与个人之间的劳务关系' },
+        { value: '承揽合同纠纷', desc: '以完成特定工作成果为目的' },
+        { value: '服务合同纠纷', desc: '提供服务的合同关系' },
+    ],
+    '民事诉讼-侵权纠纷': [
+        { value: '肖像权纠纷', desc: '未经授权使用肖像' },
+        { value: '提供劳务者受害责任纠纷', desc: '劳务过程中受到伤害' },
+        { value: '提供劳务者致害责任纠纷', desc: '劳务过程中造成他人损害' },
+        { value: '机动车交通事故责任纠纷', desc: '涉及机动车的交通肇事' },
+        { value: '非机动车交通事故责任纠纷', desc: '涉及非机动车的交通肇事' },
+        { value: '网络侵权责任纠纷', desc: '网络环境下的侵权行为' },
+    ],
+    '强制执行': [
+        { value: '追索劳动报酬纠纷', desc: '执行阶段追索劳动报酬' },
+        { value: '工伤保险待遇纠纷', desc: '执行阶段工伤赔偿' },
+        { value: '确认劳动关系纠纷', desc: '执行阶段确认劳动关系' },
+    ],
+};
+
+const DOC_STATUS_MAP = {
+    '应诉通知书': ['答辩举证阶段'],
+    '答辩通知书': ['答辩举证阶段'],
+    '起诉状': ['答辩举证阶段'],
+    '仲裁申请书副本': ['答辩举证阶段'],
+    '举证通知书': ['答辩举证阶段'],
+    '开庭传票': ['开庭审理阶段'],
+    '开庭通知书': ['开庭审理阶段'],
+    '判决书（一审）': ['裁判作出阶段', '一审结案'],
+    '裁决书（一审）': ['裁判作出阶段', '一审结案'],
+    '裁定书': ['裁判作出阶段'],
+    '调解书': ['裁判作出阶段'],
+    '生效证明': ['生效结案'],
+    '上诉状副本': ['二审-答辩举证阶段'],
+    '二审判决书': ['二审结案'],
+    '二审裁定书': ['二审结案'],
+    '执行通知书': ['强制执行阶段'],
+    '执行结案通知': ['执行结案'],
+};
+
+const CLIENT_CONTACT_MAP = {
+    // 客户名称 -> 默认对接人（映射表后续迁移到数据库 clients 表）
+    '某某科技有限公司': '王经理',
+    '某某银行': '刘总监',
+    '某某贸易公司': '陈经理',
+};
+
+const STAGE_COLORS = {
+    '一审': { bg: '#e3f2fd', border: '#42a5f5', chart: '#42a5f5' },
+    '二审': { bg: '#e8f5e9', border: '#66bb6a', chart: '#66bb6a' },
+    '仲裁': { bg: '#fff3e0', border: '#ffa726', chart: '#ffa726' },
+};
+const DEFAULT_COLOR = { bg: '#fafafa', border: '#bdbdbd', chart: '#90a4ae' };
+
+function getStageColor(stage) {
+    return STAGE_COLORS[stage] || DEFAULT_COLOR;
+}
+
+let allCases = [];
+let editingId = null;
+let prefillData = null;
+let stageChart = null;
+let closedChart = null;
+let currentSortOrder = 'asc';
+
+// ===== API 封装（自动携带 JWT，401 跳登录页） =====
+function apiFetch(url, options) {
+    options = options || {};
+    const headers = Object.assign({}, options.headers || {});
+    const token = localStorage.getItem('token');
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    return fetch(url, Object.assign({}, options, { headers })).then(function (res) {
+        if (res.status === 401) {
+            localStorage.removeItem('token');
+            localStorage.removeItem('user');
+            localStorage.removeItem('permissions');
+            window.location.href = '/login';
+            throw new Error('未登录或登录已过期');
+        }
+        return res;
+    });
+}
+
+// 用于 <img>/<iframe> 等无法携带请求头资源的场景：先带 token 拉取，再转 blob URL
+function apiBlobUrl(url) {
+    return apiFetch(url)
+        .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.blob();
+        })
+        .then(function (blob) { return URL.createObjectURL(blob); });
+}
+
+// ===================== 数据加载 =====================
+
+async function loadData() {
+    try {
+        const res = await apiFetch('/api/cases');
+        allCases = await res.json();
+        renderStats();
+        renderTable();
+        renderCharts();
+        updateStatusFilter();
+    } catch (e) {
+        console.error('加载数据失败:', e);
+        alert('加载数据失败: ' + e.message);
+    }
+}
+
+// ===================== 统计卡片 =====================
+
+function renderStats() {
+    const total = allCases.length;
+    const CLOSED_STATUSES = ['S6', 'S7', 'S9', 'S11'];
+    const closed = allCases.filter(c => CLOSED_STATUSES.includes(c.current_status)).length;
+    const open = total - closed;
+    const totalComp = allCases.reduce((s, c) => s + Number(c.claim_amount || 0), 0);
+
+    document.getElementById('statsRow').innerHTML = `
+        <div class="stat-card"><div class="label">总案件数</div><div class="value" style="color:#1a237e">${total}</div></div>
+        <div class="stat-card"><div class="label">已结案</div><div class="value" style="color:#2e7d32">${closed}</div></div>
+        <div class="stat-card"><div class="label">未结案</div><div class="value" style="color:#c62828">${open}</div></div>
+        <div class="stat-card"><div class="label">赔偿总额</div><div class="value" style="color:#e65100">¥${totalComp.toLocaleString('zh-CN',{minimumFractionDigits:2})}</div></div>
+    `;
+}
+
+// ===================== 饼图 =====================
+
+function renderCharts() {
+    if (typeof Chart === 'undefined') {
+        console.warn('Chart.js 未加载，跳过图表渲染');
+        return;
+    }
+    // ---- 阶段分布饼图 ----
+    const stageCounts = {};
+    allCases.forEach(c => {
+        const s = c.current_status_name || c.current_status || '其他';
+        stageCounts[s] = (stageCounts[s] || 0) + 1;
+    });
+    const sLabels = Object.keys(stageCounts);
+    const sData = sLabels.map(k => stageCounts[k]);
+    const sColors = sLabels.map(k => getStageColor(k).chart);
+    const sTotal = sData.reduce((a, b) => a + b, 0);
+
+    if (stageChart) stageChart.destroy();
+    stageChart = new Chart(document.getElementById('stageChart'), {
+        type: 'pie',
+        data: { labels: sLabels, datasets: [{ data: sData, backgroundColor: sColors, borderWidth: 2, borderColor: '#fff' }] },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { font: { size: 13 }, padding: 12 } },
+                tooltip: { callbacks: { label: ctx => {
+                    const pct = sTotal > 0 ? ((ctx.parsed / sTotal) * 100).toFixed(1) : 0;
+                    return `${ctx.label}: ${ctx.parsed}件 (${pct}%)`;
+                }}}
+            }
+        }
+    });
+
+    // Legend below chart
+    document.getElementById('stageLegend').innerHTML = sLabels.map(k =>
+        `<div class="legend-item"><div class="legend-dot" style="background:${getStageColor(k).chart}"></div>${k}: ${stageCounts[k]}件</div>`
+    ).join('');
+
+    // ---- 结案状态饼图 ----
+    const CLOSED_STATUSES = ['S6', 'S7', 'S9', 'S11'];
+    const closedCnt = allCases.filter(c => CLOSED_STATUSES.includes(c.current_status)).length;
+    const openCnt = allCases.length - closedCnt;
+
+    if (closedChart) closedChart.destroy();
+    closedChart = new Chart(document.getElementById('closedChart'), {
+        type: 'pie',
+        data: {
+            labels: ['已结案', '未结案'],
+            datasets: [{ data: [closedCnt, openCnt], backgroundColor: ['#66bb6a', '#ef5350'], borderWidth: 2, borderColor: '#fff' }]
+        },
+        options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+                legend: { position: 'right', labels: { font: { size: 13 }, padding: 12 } },
+                tooltip: { callbacks: { label: ctx => {
+                    const t = closedCnt + openCnt;
+                    const pct = t > 0 ? ((ctx.parsed / t) * 100).toFixed(1) : 0;
+                    return `${ctx.label}: ${ctx.parsed}件 (${pct}%)`;
+                }}}
+            }
+        }
+    });
+}
+
+// ===================== 数据表格 =====================
+
+function renderTable() {
+    const search = document.getElementById('searchBox').value.trim().toLowerCase();
+    const statusFilter = document.getElementById('statusFilter').value;
+    const sortBy = document.getElementById('sortBy').value;
+
+    let filtered = allCases.filter(c => {
+        if (search) {
+            const matches = [c.court_case_no, c.plaintiff, c.defendant, c.assigned_contact, c.case_type_name,
+                c.standard_cause_name, c.court_name, c.current_status_name]
+                .some(v => v && String(v).toLowerCase().includes(search));
+            if (!matches) return false;
+        }
+        if (statusFilter && (c.current_status_name || c.current_status) !== statusFilter) return false;
+        return true;
+    });
+
+    if (sortBy) {
+        filtered.sort((a, b) => {
+            const va = a[sortBy];
+            const vb = b[sortBy];
+            if (!va && !vb) return 0;
+            if (!va) return 1;
+            if (!vb) return -1;
+            if (currentSortOrder === 'desc') return vb.localeCompare(va);
+            return va.localeCompare(vb);
+        });
+    }
+
+    // Headers
+    document.getElementById('tableHead').innerHTML =
+        '<tr>' + FIELDS.map(f => `<th>${f.label}</th>`).join('') + '<th>操作</th></tr>';
+
+    // Body
+    if (filtered.length === 0) {
+        document.getElementById('tableBody').innerHTML =
+            `<tr><td colspan="${FIELDS.length + 1}" class="empty">暂无数据</td></tr>`;
+        return;
+    }
+
+    document.getElementById('tableBody').innerHTML = filtered.map(c => {
+        const color = getStageColor(c.current_status_name || '');
+        const cells = FIELDS.map(f => {
+            let val = c[f.key];
+            if (f.key === 'current_status') {
+                return `<td>${c.current_status_name || c.current_status || '-'}</td>`;
+            }
+            if (f.key === 'claim_amount') {
+                return `<td>${val ? '¥' + Number(val).toLocaleString('zh-CN', {minimumFractionDigits: 2}) : '-'}</td>`;
+            }
+            if (f.key === 'involved_parties' || f.key === 'involved_clients') {
+                const names = Array.isArray(val) ? val.map(p => (p && p.name) || p || '').filter(v => v).join('；') : (val || '-');
+                return `<td>${names}</td>`;
+            }
+            return `<td>${val ?? '-'}</td>`;
+        }).join('');
+
+        return `<tr style="background:${color.bg};border-left:4px solid ${color.border}">
+            ${cells}
+            <td style="white-space:nowrap">
+                <button class="btn-primary btn-sm" onclick="openModal(${c.id})">编辑</button>
+                <button class="btn-danger btn-sm" onclick="deleteCase(${c.id})">删除</button>
+            </td>
+        </tr>`;
+    }).join('');
+}
+
+function updateStatusFilter() {
+    const select = document.getElementById('statusFilter');
+    const current = select.value;
+    const statuses = [...new Set(allCases.map(c => c.current_status_name || c.current_status).filter(v => v))].sort();
+    select.innerHTML = '<option value="">全部处理情况</option>' +
+        statuses.map(s => `<option value="${s}">${s}</option>`).join('');
+    select.value = current;
+}
+
+function toggleSortOrder() {
+    currentSortOrder = currentSortOrder === 'asc' ? 'desc' : 'asc';
+    document.getElementById('sortOrderBtn').textContent = currentSortOrder === 'asc' ? '↑ 升序' : '↓ 降序';
+    renderTable();
+}
+
+// ===================== 新增/编辑 弹窗 =====================
+
+function openModal(id) {
+    editingId = id || null;
+        let draft = null;
+    if (id === undefined || id === null) draft = loadDraft();
+    document.getElementById('modalTitle').textContent = id ? '编辑案件' : (draft ? '新增案件（已恢复草稿）' : '新增案件');
+
+    const existing = id ? allCases.find(c => c.id === id) : (prefillData || draft || {});
+
+    document.getElementById('formGrid').innerHTML = FIELDS.map(f => {
+        let dividerHtml = f.divider ? `<div class="form-divider"></div>` : '';
+        let val = existing[f.key];
+        // JSONB 数组字段在表单中展示为文本（用分号连接各条 name）
+        if ((f.key === 'involved_parties' || f.key === 'involved_clients') && Array.isArray(val)) {
+            val = val.map(p => (p && p.name) || p || '').filter(v => v).join('；');
+        }
+        // 案件状态：接口返回状态码 + 中文名，表单用中文
+        if (f.key === 'current_status' && val && !Array.isArray(val)) {
+            const nameMap = existing.current_status_name;
+            if (nameMap && String(nameMap).length > 2) val = nameMap;
+        }
+        const wide = (f.type === 'textarea') ? ' full' : '';
+        const reqMark = f.required ? ' <span style="color:red">*</span>' : '';
+        const reqAttr = f.required ? ' required' : '';
+
+        let fieldHtml = '';
+        if (f.type === 'select') {
+            let optsArr = f.options || [];
+            if (f.depends === 'case_type_name') {
+                const parentVal = existing[f.depends] || '';
+                optsArr = (CAUSE_MAP[parentVal] || []).map(c => c.value);
+            }
+            const opts = optsArr.map(o => {
+                const [v, l] = Array.isArray(o) ? o : [o, o];
+                const sel = String(val) === String(v) ? 'selected' : '';
+                return `<option value="${v}" ${sel}>${l}</option>`;
+            }).join('');
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}${reqMark}</label><select id="field_${f.key}"${reqAttr}>${opts}</select></div>`;
+        } else if (f.type === 'textarea') {
+            const maxLen = f.maxlength ? ` maxlength="${f.maxlength}"` : '';
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}${reqMark}</label><textarea id="field_${f.key}" rows="3"${maxLen}${reqAttr} placeholder="${f.placeholder || ''}">${val || ''}</textarea></div>`;
+        } else if (f.type === 'readonly') {
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}</label><input type="text" id="field_${f.key}" value="${val || '保存后自动生成'}" readonly style="background:#f5f5f5;color:#888;"></div>`;
+        } else if (f.type === 'search') {
+            const dlId = 'dl_' + f.key;
+            const dlOpts = (f.options || []).map(o => `<option value="${o}">`).join('');
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}${reqMark}</label><input id="field_${f.key}" list="${dlId}" placeholder="${f.placeholder || ''}"${reqAttr} value="${val || ''}"><datalist id="${dlId}">${dlOpts}</datalist></div>`;
+        } else if (f.type === 'file') {
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}</label><input type="file" id="field_${f.key}" accept="${f.accept || ''}"></div>`;
+        } else {
+            const step = f.type === 'number' ? ' step="0.01"' : '';
+            const minAttr = f.min !== undefined ? ` min="${f.min}"` : '';
+            const maxLen = f.maxlength ? ` maxlength="${f.maxlength}"` : '';
+            const ph = f.placeholder ? ` placeholder="${f.placeholder}"` : '';
+            const type = f.type === 'date' ? 'date' : f.type;
+            fieldHtml = `<div class="form-group${wide}"><label>${f.label}${reqMark}</label><input type="${type}" id="field_${f.key}" value="${val ?? ''}"${step}${minAttr}${maxLen}${ph}${reqAttr}></div>`;
+        }
+        if (f.required) {
+            fieldHtml = fieldHtml.replace('</div>', '<div class="form-error-msg">必填项不能为空</div></div>');
+        }
+        return dividerHtml + fieldHtml;
+    }).join('');
+
+    document.getElementById('modalOverlay').classList.add('active');
+}
+
+function closeModal() {
+    document.getElementById('modalOverlay').classList.remove('active');
+    editingId = null;
+}
+
+function updateCauses() {
+    const biz = document.getElementById('field_case_type_name');
+    const sel = document.getElementById('field_standard_cause_name');
+    if (biz === null || biz === undefined || sel === null || sel === undefined) return;
+    const causes = CAUSE_MAP[biz.value] || [];
+    sel.innerHTML = causes.map(c => '<option value= + c.value + >' + c.value + '</option>').join('');
+    if (causes.length === 0) {
+        sel.innerHTML = '<option value=>请先选择业务类型</option>';
+    }
+}
+function updateContactByClient() {
+    const clientEl = document.getElementById('field_involved_clients');
+    const contactEl = document.getElementById('field_assigned_contact');
+    if (clientEl === null || clientEl === undefined || contactEl === null || contactEl === undefined) return;
+    const clientName = (clientEl.value || '').trim();
+    const contact = CLIENT_CONTACT_MAP[clientName];
+    if (contact !== undefined) {
+        contactEl.value = contact;
+    }
+}
+function updateStatusByDoc() {
+    const docEl = document.getElementById('field_document_type');
+    const statusEl = document.getElementById('field_current_status');
+    if (docEl === null || docEl === undefined || statusEl === null || statusEl === undefined) return;
+    const doc = docEl.value;
+    const statuses = DOC_STATUS_MAP[doc];
+    if (statuses !== undefined && statuses.length > 0) {
+        statusEl.value = statuses[0];
+    }
+}
+document.getElementById('formGrid').addEventListener('change', function(e) {
+    if (e.target && e.target.id === 'field_case_type_name') updateCauses();
+    if (e.target && e.target.id === 'field_involved_clients') updateContactByClient();
+    if (e.target && e.target.id === 'field_document_type') updateStatusByDoc();
+});
+
+async function saveCase() {
+    const data = {};
+    FIELDS.forEach(f => {
+        if (f.type === 'readonly' || f.type === 'file') return;
+        const el = document.getElementById(`field_${f.key}`);
+        let val = el.value;
+        if (f.type === 'number') val = parseFloat(val) || 0;
+        if (f.key === 'involved_parties' || f.key === 'involved_clients') {
+            // 文本输入 -> JSONB 数组 [{name, ...}]（分号/逗号分隔多条）
+            const names = String(val || '').split(/[；;，,]/).map(s => s.trim()).filter(Boolean);
+            val = names.length ? names.map(n => ({ name: n })) : null;
+        }
+        data[f.key] = val;
+    });
+
+    const firstErr = validateForm();
+    if (firstErr !== null) {
+        firstErr.focus();
+        alert('请填写所有必填字段');
+        return;
+    }
+
+    const url = editingId ? `/api/cases/${editingId}` : '/api/cases';
+    const method = editingId ? 'PUT' : 'POST';
+
+    try {
+        const res = await apiFetch(url, {
+            method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
+        });
+        if (res.ok) {
+            const saved = await res.json();
+            const attEl = document.getElementById('field_attachment');
+            if (attEl && attEl.files && attEl.files.length && saved && saved.id) {
+                try {
+                    const fd = new FormData();
+                    fd.append('file', attEl.files[0]);
+                    fd.append('doc_type', 'procedural_notice');
+                    fd.append('uploader', '手动录入');
+                    fd.append('case_id', saved.id);
+                    await apiFetch('/api/v1/files/upload', { method: 'POST', body: fd });
+                } catch (err) {
+                    console.error('附件上传失败', err);
+                }
+            }
+            clearDraft();
+            prefillData = null;
+            closeModal();
+            loadData();
+        } else {
+            const err = await res.text();
+            alert('保存失败: ' + err);
+        }
+    } catch (e) {
+        alert('保存失败: ' + e.message);
+    }
+}
+
+// ===== 草稿与表单校验 =====
+function saveDraft() {
+    const data = {};
+    FIELDS.forEach(f => {
+        if (f.type === 'readonly' || f.type === 'file') return;
+        const el = document.getElementById('field_' + f.key);
+        if (el) data[f.key] = el.value;
+    });
+    localStorage.setItem('case_draft', JSON.stringify(data));
+    alert('草稿已保存，下次打开可继续编辑');
+}
+
+function loadDraft() {
+    try {
+        const raw = localStorage.getItem('case_draft');
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function clearDraft() {
+    localStorage.removeItem('case_draft');
+}
+
+function validateForm() {
+    let firstError = null;
+    FIELDS.forEach(f => {
+        if (f.required === undefined || f.required === false) return;
+        const el = document.getElementById('field_' + f.key);
+        if (el === undefined || el === null) return;
+        const group = el.closest('.form-group');
+        const msgEl = group ? group.querySelector('.form-error-msg') : null;
+        if (msgEl) msgEl.classList.remove('show');
+        el.classList.remove('error');
+        const val = (el.value || '').trim();
+        if (val === '') {
+            el.classList.add('error');
+            if (msgEl) msgEl.classList.add('show');
+            if (firstError === null) firstError = el;
+        }
+    });
+    return firstError;
+}
+
+async function deleteCase(id) {
+    if (!confirm('确认删除此案件？')) return;
+    try {
+        const res = await apiFetch(`/api/cases/${id}`, { method: 'DELETE' });
+        if (res.ok) loadData();
+        else alert('删除失败');
+    } catch (e) {
+        alert('删除失败: ' + e.message);
+    }
+}
+
+function exportExcel() {
+    // 带 token 下载（导出接口已鉴权）
+    apiFetch('/api/export/excel')
+        .then(function (res) {
+            if (!res.ok) throw new Error('HTTP ' + res.status);
+            return res.blob();
+        })
+        .then(function (blob) {
+            const a = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            a.href = url;
+            a.download = 'cases_export.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
+        .catch(function (e) { alert('导出失败: ' + e.message); });
+}
+
+// Click overlay to close modal
+document.getElementById('modalOverlay').addEventListener('click', e => {
+    if (e.target === document.getElementById('modalOverlay')) closeModal();
+});
+
+// ESC to close modal
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeModal();
+});
+
+// ===================== PDF/图片识别（真实 OCR，MinerU） =====================
+
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+let recognizedData = null;
+let _ocrTextData = null;
+
+const RECOGNIZE_FIELD_LABELS = {
+    // 新表单字段（LawsuitCase）
+    court_case_no: '案号', document_type: '文书类型', plaintiff: '原告',
+    defendant: '被告', involved_parties: '涉及主体', involved_clients: '涉及客户',
+    case_type_name: '业务类型', standard_cause_name: '标准案由', court_name: '受理法院/仲裁委',
+    current_status: '案件状态', assigned_contact: '对接人', case_description: '案由描述',
+    claim_amount: '涉案金额', deadline_date: '关键日期', remark: '备注',
+    // OCR 旧键兼容（ocr_service 迁移到新字段后移除）
+    case_number: '案号', case_type: '业务类型', service_client: '涉及客户',
+    client_contact: '对接人', processing_status: '案件状态', compensation_amount: '涉案金额',
+    standard_cause: '标准案由', accept_court: '受理法院/仲裁委', cause_description: '案由描述',
+};
+
+// OCR 识别结果键 -> 新表单字段键（过渡映射）
+const OCR_TO_FORM_KEY_MAP = {
+    case_number: 'court_case_no',
+    case_type: 'case_type_name',
+    service_client: 'involved_clients',
+    client_contact: 'assigned_contact',
+    processing_status: 'current_status',
+    compensation_amount: 'claim_amount',
+    standard_cause: 'standard_cause_name',
+    accept_court: 'court_name',
+    cause_description: 'case_description',
+};
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragging'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
+dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragging');
+    if (e.dataTransfer.files && e.dataTransfer.files.length) handleRecognizeFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+    if (fileInput.files && fileInput.files.length) handleRecognizeFile(fileInput.files[0]);
+    fileInput.value = '';
+});
+
+const ALLOWED_EXTS = ["pdf", "jpg", "jpeg", "png", "bmp", "tiff"];
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_FILES = 10;
+let selectedFiles = [];
+
+function handleRecognizeFile(file) {
+    if (selectedFiles.length >= MAX_FILES) {
+        alert('一次最多上传 10 个文件');
+        return;
+    }
+    const name = file.name || '未命名';
+    const parts = name.split('.');
+    const ext = parts.length > 1 ? parts.pop().toLowerCase() : '';
+    const item = { file: file, name: name, ext: ext, size: file.size, status: 'ok', error: '' };
+    if (ALLOWED_EXTS.indexOf(ext) === -1) {
+        item.status = 'error';
+        item.error = '不支持的文件格式，请上传PDF或图片';
+    } else if (file.size > MAX_FILE_SIZE) {
+        item.status = 'error';
+        item.error = '文件大小超出限制（最大50MB）';
+    }
+    selectedFiles.push(item);
+    renderFileList();
+    document.getElementById('fileProcessPanel').style.display = 'block';
+    loadCasesIntoRecognizeCase();
+}
+
+function renderFileList() {
+    const box = document.getElementById('fileList');
+    box.innerHTML = selectedFiles.map(function (it, i) {
+        const size = formatSize(it.size);
+        let statusHtml;
+        if (it.status === 'error') {
+            statusHtml = '<span class="file-status-error">' + it.error + '</span>';
+        } else if (it.status === 'done') {
+            statusHtml = '<span class="file-status-done">完成</span>';
+        } else if (it.status === 'uploading') {
+            statusHtml = '<span class="file-status-ok">上传中...</span>';
+        } else {
+            statusHtml = '<span class="file-status-ok">待上传</span>';
+        }
+        let actionHtml = '';
+        if (it.status === 'uploading') {
+            actionHtml = '';
+        } else {
+            actionHtml = '<button class="btn-sm btn-danger" onclick="removeFile(' + i + ')">删除</button>';
+        }
+        return '<div class="file-row" id="fileRow_' + i + '">' +
+            '<span class="file-row-name">' + it.name + '</span>' +
+            '<span class="file-row-size">' + size + '</span>' +
+            statusHtml +
+            actionHtml +
+            '<div class="file-progress" id="fileProg_' + i + '" style="display:none;">' +
+            '<div class="file-progress-bar" style="width:0%"></div></div>' +
+            '</div>';
+    }).join('');
+    const valid = selectedFiles.filter(function (f) { return f.status === 'ok' || f.status === 'uploading' || f.status === 'done'; }).length;
+    document.getElementById('selectedFileName').textContent = '已选择 ' + selectedFiles.length + ' 个文件（可上传 ' + valid + ' 个）';
+}
+
+
+
+function clearSelectedFiles() {
+    selectedFiles = [];
+    renderFileList();
+    document.getElementById('fileProcessPanel').style.display = 'none';
+    document.getElementById('recognizeStatus').style.display = 'none';
+    document.getElementById('recognizeResult').style.display = 'none';
+}
+
+
+function removeFile(index) {
+    if (index < 0 || index >= selectedFiles.length) return;
+    const it = selectedFiles[index];
+    if (it.status === 'uploading') return;
+    selectedFiles.splice(index, 1);
+    renderFileList();
+    if (selectedFiles.length === 0) {
+        document.getElementById('fileProcessPanel').style.display = 'none';
+        document.getElementById('recognizeStatus').style.display = 'none';
+        document.getElementById('recognizeResult').style.display = 'none';
+    }
+}
+
+
+async function loadCasesIntoRecognizeCase() {
+    try {
+        const res = await apiFetch('/api/cases');
+        const cases = await res.json();
+        const sel = document.getElementById('recognizeCaseId');
+        const current = sel.value;
+        sel.innerHTML = '<option value="">所属案件（可选）</option>' +
+            cases.map(c => '<option value="' + c.id + '">' + (c.court_case_no || '案件' + c.id) + '</option>').join('');
+        sel.value = current;
+    } catch (e) {
+        console.error('加载案件列表失败', e);
+    }
+}
+
+async function startFileProcessing() {
+    const docType = document.getElementById('recognizeDocType').value;
+    const uploader = document.getElementById('recognizeUploader').value || '未署名';
+    const caseId = document.getElementById('recognizeCaseId').value;
+    const resultEl = document.getElementById('recognizeResult');
+    const prEl = document.getElementById('recognizeProcessResult');
+    resultEl.style.display = 'none';
+    prEl.innerHTML = '';
+    let total = 0;
+    let okCount = 0;
+    for (let i = 0; i < selectedFiles.length; i++) {
+        const it = selectedFiles[i];
+        if (it.status === 'error') continue;
+        total++;
+        it.status = 'uploading';
+        renderFileList();
+        const ok = await uploadOne(it, i, docType, uploader, caseId, resultEl, prEl);
+        if (ok) okCount++;
+    }
+    prEl.innerHTML = '<div class="upload-ok">✅ 全部处理完成：成功 ' + okCount + ' / ' + total + ' 个文件</div>';
+    selectedFiles = [];
+    renderFileList();
+    document.getElementById('fileProcessPanel').style.display = 'none';
+}
+
+function uploadOne(it, index, docType, uploader, caseId, resultEl, prEl) {
+    return new Promise(function (resolve) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/files/upload');
+        const fd = new FormData();
+        fd.append('file', it.file);
+        fd.append('doc_type', docType);
+        fd.append('uploader', uploader);
+        if (caseId) fd.append('case_id', caseId);
+        const token = localStorage.getItem('token');
+        if (token) xhr.setRequestHeader('Authorization', 'Bearer ' + token);
+        const progRow = document.getElementById('fileProg_' + index);
+        const progBar = progRow.querySelector('.file-progress-bar');
+        progRow.style.display = 'block';
+        xhr.upload.onprogress = function (e) {
+            if (e.lengthComputable) {
+                const pct = Math.round((e.loaded / e.total) * 100);
+                progBar.style.width = pct + '%';
+            }
+        };
+        xhr.onload = function () {
+            try {
+                const data = JSON.parse(xhr.responseText);
+                if (xhr.status === 200) {
+                    it.status = 'done';
+                    progBar.style.width = '100%';
+                    if (data.ocr_result && data.ocr_result.status === 'pending' && data.file_id) {
+                        // OCR 后台执行中：轮询状态，完成后显示结果
+                        pollOcrResult(it, data, resultEl, prEl);
+                    } else if (data.recognized_fields) {
+                        showRecognitionResult(data);
+                    }
+                    resolve(true);
+                } else {
+                    it.status = 'error';
+                    it.error = data.message || data.detail || ('上传失败(' + xhr.status + ')');
+                    renderFileList();
+                    resolve(false);
+                }
+            } catch (err) {
+                it.status = 'error';
+                it.error = '响应解析失败';
+                renderFileList();
+                resolve(false);
+            }
+        };
+        xhr.onerror = function () {
+            it.status = 'error';
+            it.error = '网络错误';
+            renderFileList();
+            resolve(false);
+        };
+        xhr.send(fd);
+    });
+}
+
+function pollOcrResult(it, data, resultEl, prEl) {
+    const fileId = data.file_id;
+    const docType = data.doc_type || 'core_document';
+    const fileName = data.file_name || (it && it.file && it.file.name) || '-';
+    const maxTries = 120; // 2s * 120 ≈ 4 分钟
+    let tries = 0;
+    const timer = setInterval(function () {
+        apiFetch('/api/files/' + docType + '/' + fileId + '/ocr')
+            .then(function (r) { return r.json(); })
+            .then(function (st) {
+                tries++;
+                const status = st.status;
+                const result = st.ocr_result || {};
+                const finalData = {
+                    file_name: fileName,
+                    file_type: data.file_type || '',
+                    ocr_result: Object.assign({}, result, { status: status }),
+                    recognized_fields: result.recognized_fields || {},
+                };
+                if (status === 'done' || status === 'failed') {
+                    clearInterval(timer);
+                    showRecognitionResult(finalData);
+                } else if (tries >= maxTries) {
+                    clearInterval(timer);
+                    showRecognitionResult({
+                        file_name: fileName,
+                        file_type: data.file_type || '',
+                        ocr_result: {
+                            status: 'failed', ok: false,
+                            message: 'OCR 识别超时，建议手动录入',
+                            recognized_fields: {},
+                        },
+                        recognized_fields: {},
+                    });
+                }
+            })
+            .catch(function () {
+                tries++;
+                if (tries >= maxTries) clearInterval(timer);
+            });
+    }, 2000);
+}
+
+function showRecognitionResult(data) {
+    recognizedData = data;
+    document.getElementById('recognizeStatus').style.display = 'none';
+    const resultEl = document.getElementById('recognizeResult');
+    resultEl.style.display = 'block';
+    // 临时调试：重置结构化文本展示区
+    _ocrTextData = null;
+    document.getElementById('ocrTextWrap').style.display = 'none';
+    const ocr = data.ocr_result;
+    if (ocr && (ocr.status === 'pending' || ocr.status === 'running')) {
+        // OCR 仍在处理
+        document.getElementById('resultFileInfo').textContent =
+            '文件: ' + (data.file_name || '-') + ' | OCR 识别中，请稍候…';
+        document.getElementById('resultFields').innerHTML = '';
+        return;
+    }
+    if (ocr && (ocr.status === 'failed' || ocr.ok === false)) {
+        // OCR 失败：明确提示用户手动录入
+        document.getElementById('resultFileInfo').textContent =
+            '文件: ' + (data.file_name || '-') + ' | ' + (ocr.message || 'OCR识别失败，建议手动录入');
+        document.getElementById('resultFields').innerHTML = '';
+        return;
+    }
+    document.getElementById('resultFileInfo').textContent =
+        '文件: ' + (data.file_name || '-') + ' | 提取 ' + Object.keys(data.recognized_fields || {}).length + ' 个字段';
+    const box = document.getElementById('resultFields');
+    box.innerHTML = '';
+    const fields = data.recognized_fields || {};
+    for (const key of Object.keys(fields)) {
+        const label = RECOGNIZE_FIELD_LABELS[key] || key;
+        const value = (fields[key] === null || fields[key] === undefined || fields[key] === '') ? '-' : fields[key];
+        const chip = document.createElement('div');
+        chip.className = 'field-chip';
+        chip.innerHTML = '<span class="chip-label">' + label + '</span><span class="chip-value">' + value + '</span>';
+        box.appendChild(chip);
+    }
+    // 临时调试：展示 OCR 结构化文本
+    const ocrRes = data.ocr_result || {};
+    const ocrWrap = document.getElementById('ocrTextWrap');
+    if (ocrRes.structured_text || ocrRes.markdown) {
+        _ocrTextData = { text: ocrRes.structured_text || '', markdown: ocrRes.markdown || '' };
+        ocrWrap.style.display = '';
+        showOcrTextMode('text');
+    }
+}
+
+function applyRecognition() {
+    if (recognizedData === null) return;
+    const formData = {};
+    for (const [k, v] of Object.entries(recognizedData.recognized_fields || {})) {
+        if (v === null || v === undefined || v === '') continue;
+        // OCR 旧键 -> 新表单键（过渡映射）
+        const formKey = OCR_TO_FORM_KEY_MAP[k] || k;
+        let value = v;
+        // date normalize for YYYY-MM-DD input
+        if (formKey === 'deadline_date') {
+            const m = String(v).match(/(\d{4})[-年](\d{1,2})[-月](\d{1,2})日?/);
+            if (m) {
+                value = m[1] + '-' + String(m[2]).padStart(2, '0') + '-' + String(m[3]).padStart(2, '0');
+            }
+        }
+        formData[formKey] = value;
+    }
+    prefillData = formData;
+    openModal(null);
+}
+
+function clearRecognition() {
+    recognizedData = null;
+    _ocrTextData = null;
+    document.getElementById('recognizeResult').style.display = 'none';
+    document.getElementById('recognizeStatus').style.display = 'none';
+}
+
+function showOcrTextMode(mode) {
+    if (!_ocrTextData) return;
+    document.getElementById('ocrStructuredText').textContent =
+        mode === 'markdown' ? (_ocrTextData.markdown || '（无 Markdown）') : (_ocrTextData.text || '（无纯文本）');
+}
+
+// ===================== 案件文件管理 =====================
+
+const DOC_TYPE_LABELS = {
+    core_document: '核心法定文书',
+    evidence: '证据材料',
+    procedural_notice: '程序性告知附件'
+};
+
+function switchView(view) {
+    document.getElementById('mainView').style.display = view === 'main' ? '' : 'none';
+    document.getElementById('filesView').style.display = view === 'files' ? '' : 'none';
+    if (view === 'files') loadCasesIntoSelector();
+}
+
+async function loadCasesIntoSelector() {
+    try {
+        const res = await apiFetch('/api/cases');
+        const cases = await res.json();
+        const sel = document.getElementById('caseSelector');
+        sel.innerHTML = '<option value="">-- 请选择案件 --</option>' +
+            cases.map(c => '<option value="' + c.id + '">' + (c.court_case_no || '案件' + c.id) + '</option>').join('');
+        loadCaseFiles(sel.value);
+    } catch (e) {
+        alert('加载案件列表失败: ' + e.message);
+    }
+}
+
+async function loadCaseFiles(caseId) {
+    if (caseId === '') return;
+    try {
+        const res = await apiFetch('/api/cases/' + caseId + '/files');
+        if (res.ok === false) throw new Error('加载失败(' + res.status + ')');
+        const data = await res.json();
+        renderFileTree(data.files || {});
+    } catch (e) {
+        alert('加载文件失败: ' + e.message);
+    }
+}
+
+function renderFileTree(files) {
+    for (const type of Object.keys(DOC_TYPE_LABELS)) {
+        const list = files[type] || [];
+        document.getElementById('count_' + type).textContent = '(' + list.length + ')';
+        const box = document.getElementById('files_' + type);
+        if (list.length === 0) {
+            box.innerHTML = '<div class="tree-empty">暂无文件</div>';
+        } else {
+            box.innerHTML = list.map(f => renderFileItem(type, f)).join('');
+        }
+    }
+}
+
+function renderFileItem(type, f) {
+    const size = formatSize(f.file_size);
+    const canPreview = (f.mime_type || '').indexOf('pdf') >= 0 || (f.mime_type || '').indexOf('image') >= 0;
+    const btn = canPreview ? '<button class="btn-sm btn-primary" onclick="previewFile(\'' + type + '\',' + f.id + ',\'' + (f.mime_type || '') + '\')">预览</button>' : '';
+    return '<div class="file-item">' +
+        '<div class="file-info">' +
+        '  <div class="file-name">📄 ' + f.file_name + '</div>' +
+        '  <div class="file-meta">大小: ' + size + ' | 上传日期: ' + (f.uploaded_at || '-') + ' | 上传人: ' + (f.uploader || '-') + '</div>' +
+        '</div>' +
+        '<div class="file-actions">' + btn + '</div>' +
+        '</div>';
+}
+
+function formatSize(bytes) {
+    if (bytes === null || bytes === undefined) return '-';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(2) + ' MB';
+}
+
+function toggleType(type) {
+    const files = document.getElementById('files_' + type);
+    const arrow = document.querySelector('.tree-type[data-type="' + type + '"] .tree-arrow');
+    if (files.style.display === 'none') {
+        files.style.display = '';
+        arrow.textContent = '▾';
+    } else {
+        files.style.display = 'none';
+        arrow.textContent = '▸';
+    }
+}
+
+function previewFile(type, id, mime) {
+    document.getElementById('previewTitle').textContent = '文件预览';
+    const body = document.getElementById('previewBody');
+    const url = '/api/files/preview/' + type + '/' + id;
+    body.innerHTML = '<div style="text-align:center;padding:24px;color:#888;">加载中…</div>';
+    document.getElementById('previewOverlay').style.display = 'flex';
+    apiBlobUrl(url)
+        .then(function (blobUrl) {
+            if (mime && mime.indexOf('image') >= 0) {
+                body.innerHTML = '<img src="' + blobUrl + '" style="max-width:100%;max-height:70vh;display:block;margin:0 auto;">';
+            } else {
+                body.innerHTML = '<iframe src="' + blobUrl + '" style="width:100%;height:70vh;border:none;"></iframe>';
+            }
+        })
+        .catch(function (e) {
+            body.innerHTML = '<div style="text-align:center;padding:24px;color:#d32f2f;">预览失败: ' + e.message + '</div>';
+        });
+}
+
+function closePreview() {
+    document.getElementById('previewOverlay').style.display = 'none';
+    document.getElementById('previewBody').innerHTML = '';
+}
+
+// ===== 审计日志 =====
+function openAuditLogs() {
+    document.getElementById('auditOverlay').style.display = 'flex';
+    loadAuditLogs();
+}
+
+function closeAuditLogs() {
+    document.getElementById('auditOverlay').style.display = 'none';
+    document.getElementById('auditBody').innerHTML = '';
+}
+
+const AUDIT_ACTION_LABELS = { CREATE: '创建', UPDATE: '修改', DELETE: '删除', LOGIN: '登录', EXPORT: '导出' };
+const AUDIT_TARGET_LABELS = { CASE: '案件', FILE: '文件', MAPPING: '匹配', SYSTEM: '系统' };
+
+function loadAuditLogs() {
+    const action = document.getElementById('auditActionFilter').value;
+    const target = document.getElementById('auditTargetFilter').value;
+    let url = '/api/audit-logs?limit=200';
+    if (action) url += '&action_type=' + encodeURIComponent(action);
+    if (target) url += '&target_type=' + encodeURIComponent(target);
+    apiFetch(url)
+        .then(function (r) { return r.json(); })
+        .then(function (logs) {
+            const body = document.getElementById('auditBody');
+            if (!logs || !logs.length) {
+                body.innerHTML = '<div style="text-align:center;padding:24px;color:#888;">暂无审计日志</div>';
+                return;
+            }
+            const rows = logs.map(function (log) {
+                const detail = log.action_detail ? JSON.stringify(log.action_detail) : '';
+                return '<tr>' +
+                    '<td>' + (log.created_at || '-') + '</td>' +
+                    '<td>' + (log.user_name || log.user_id || '-') + '</td>' +
+                    '<td>' + (AUDIT_ACTION_LABELS[log.action_type] || log.action_type) + '</td>' +
+                    '<td>' + (AUDIT_TARGET_LABELS[log.target_type] || log.target_type) + '</td>' +
+                    '<td>' + (log.target_id || '-') + '</td>' +
+                    '<td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + detail.replace(/"/g, '&quot;') + '">' + (detail || '-') + '</td>' +
+                    '<td>' + (log.ip_address || '-') + '</td>' +
+                    '</tr>';
+            }).join('');
+            body.innerHTML = '<table style="width:100%;border-collapse:collapse;font-size:12px;">' +
+                '<thead><tr style="background:#f5f5f5;">' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">时间</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">用户</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">操作</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">对象</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">对象ID</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">详情</th>' +
+                '<th style="padding:6px;text-align:left;border:1px solid #eee;">IP</th>' +
+                '</tr></thead><tbody>' + rows + '</tbody></table>' +
+                '<div style="text-align:right;padding:8px;color:#888;font-size:12px;">共 ' + logs.length + ' 条（最近 200 条）</div>';
+        })
+        .catch(function (e) {
+            document.getElementById('auditBody').innerHTML = '<div style="text-align:center;padding:24px;color:#d32f2f;">加载审计日志失败: ' + e.message + '</div>';
+        });
+}
+
+// ===== 登录状态与权限控制 =====
+(function initAuth() {
+    const userRaw = localStorage.getItem('user');
+    const token = localStorage.getItem('token');
+    if (userRaw === null || token === null) {
+        window.location.href = '/login';
+        return;
+    }
+    const user = JSON.parse(userRaw);
+    const perms = JSON.parse(localStorage.getItem('permissions') || '[]');
+    document.getElementById('userInfo').textContent = user.username + '（' + (user.role || '') + '）';
+    document.getElementById('userInfo').style.display = 'inline';
+    document.getElementById('btnLogout').style.display = 'inline-block';
+    if (perms.indexOf('system_settings') >= 0) document.getElementById('btnSystemSettings').style.display = 'inline-block';
+    if (perms.indexOf('user_management') >= 0) document.getElementById('btnUserManagement').style.display = 'inline-block';
+    if (perms.indexOf('audit_log') >= 0) document.getElementById('btnAuditLog').style.display = 'inline-block';
+})();
+
+function logout() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('permissions');
+    window.location.href = '/login';
+}
+
+// Init
+loadData();
+</script>
+</body>
+</html>
