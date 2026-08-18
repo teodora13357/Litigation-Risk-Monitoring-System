@@ -13,7 +13,7 @@ from langchain_core.utils.uuid import uuid7
 # 1. 配置
 # ============================================================
 BASE_URL = "http://192.168.10.250:8000"
-PDF_PATH = Path("/Users/olof.chenx2x.net/s2/案件材料扫描件/（2026）粤 0981 民初 4148 号.pdf").resolve()
+PDF_PATH = Path("/Users/olof.chenx2x.net/s4/（2026）粤 0981 民初 4148 号.pdf").resolve()
 
 assert PDF_PATH.exists(), f"文件不存在: {PDF_PATH}"
 print(f"待上传文件: {PDF_PATH} ({PDF_PATH.stat().st_size} bytes)")
@@ -91,7 +91,7 @@ model = ChatOpenAI(
 from deepagents.middleware import SkillsMiddleware
 from deepagents.backends.filesystem import FilesystemBackend
 
-SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/skills")
+SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/Litigation-Risk-Monitoring-System/prompts/skills")
 
 TYPE_TO_SKILL = [
     ("应诉", "defense-notice-extract"),
@@ -138,7 +138,7 @@ def _match_skill(name: str):
              "起诉状": "complaint-arbitration-extract", "仲裁申请书": "complaint-arbitration-extract",
              "举证": "evidence-notice-extract", "应诉": "defense-notice-extract",
              "判决": "judgment-ruling-mediation-extract", "裁定": "judgment-ruling-mediation-extract",
-             "调解": "judgment-ruling-mediation-extract", "分类": "document-type-classification"}
+             "调解": "judgment-ruling-mediation-extract", "分类": "file-type-classification"}
     for k, v in alias.items():
         if k in name:
             return v
@@ -150,7 +150,7 @@ def load_skill(skill_name: str) -> str:
     """读取指定 skill 的完整指令（SKILL.md 全文）。
 
     Available skills:
-    - document-type-classification: 文书类型判定
+    - file-type-classification: 文书类型判定
     - summons-hearing-extract: 传票/开庭通知书/改期开庭通知书字段提取
     - evidence-notice-extract: 举证通知书字段提取
     - complaint-arbitration-extract: 起诉状/仲裁申请书字段提取
@@ -164,15 +164,29 @@ def load_skill(skill_name: str) -> str:
     return read_skill(match)
 
 
-def make_agent():
-    """构建带默认 SkillsMiddleware + load_skill 工具的 agent（渐进披露，纯文本 JSON 输出）。"""
+def make_agent(system_prompt: str | None = None):
+    """构建带默认 SkillsMiddleware + load_skill 工具的 agent（渐进披露，纯文本 JSON 输出）。
+    通过 system_prompt 传指令，避免额外 system 消息导致服务端模板报错。"""
     backend = FilesystemBackend(root_dir=str(SKILLS_ROOT))
     middleware = SkillsMiddleware(backend=backend, sources=["."])
     return create_agent(
         model,
         middleware=[middleware],
         tools=[load_skill],
+        system_prompt=system_prompt,
     )
+
+
+def _ref_fields(skill_name: str) -> list[str]:
+    """从 ref.json 读取该 skill 的字段清单（正常分支，去掉提取说明）。"""
+    rf = SKILLS_ROOT / skill_name / "ref.json"
+    sch = json.loads(rf.read_text(encoding="utf-8"))
+    for br in sch.get("oneOf", []):
+        props = br.get("properties", {})
+        if "错误" in props:
+            continue
+        return [k for k in props if k != "提取说明"]
+    return []
 
 
 def extract_json(text: str) -> dict:
@@ -187,6 +201,22 @@ def extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             continue
     raise ValueError(f"响应中未找到 JSON: {text[:200]}")
+
+
+def align_to_ref(obj: dict, skill_name: str) -> dict:
+    """把模型输出按 ref.json 规整：只保留清单字段，缺失补 null，返回 {字段: 值}。
+    模型输出若已包成 {value: ...} 则取其 value。"""
+    fields = _ref_fields(skill_name)
+    out = {}
+    for f in fields:
+        raw = obj.get(f)
+        if isinstance(raw, dict) and "value" in raw:
+            raw = raw["value"]
+        out[f] = raw
+    notes = obj.get("提取说明")
+    if isinstance(notes, dict):
+        out["提取说明"] = notes
+    return out
 
 
 def _vote_value(candidates):
@@ -226,7 +256,7 @@ CLASSIFY_PROMPT = """你是一名严谨的法律文书解析专家。
 用户输入一份法律文书。请判断其文书类型。
 
 执行流程（必须按顺序）：
-1. 首先调用 load_skill 工具，传入 skill 名称 "document-type-classification"，读取完整的类型判定规则。
+1. 首先调用 load_skill 工具，传入 skill 名称 "file-type-classification"，读取完整的类型判定规则。
 2. 严格按读取到的 SKILL 判定规则判断文书类型。
 
 判定规则要点：
@@ -276,30 +306,34 @@ def main():
     query1 = str(result.get("results"))
     NUM_VOTES = 20
 
-    agent_executor = make_agent()
+    classify_agent = make_agent(CLASSIFY_PROMPT)
 
-    # 第一步：分类
-    cls_resp = agent_executor.invoke(
-        {"messages": [("system", CLASSIFY_PROMPT), ("user", query1)]},
+    # 第一步：分类（system_prompt 已内置，messages 里不要再传 system，否则服务端报错）
+    cls_resp = classify_agent.invoke(
+        {"messages": [("user", query1)]},
         config={"configurable": {"thread_id": str(uuid7())}},
     )
-    cls = extract_json(cls_resp.get("messages", [])[-1].content)
+    cls_msg = cls_resp["messages"][-1]
+    cls = extract_json(cls_msg.content)
     doc_type = cls.get("文书类型") or ""
     need_parse = str(cls.get("是否需解析") or "").strip()
     print("分类结果:", json.dumps(cls, ensure_ascii=False))
 
-    # 第二步：按类型加载 skill 提取（生成 NUM_VOTES 次，逐字段取众数）
+    # 第二步：按类型加载 skill 提取（生成 NUM_VOTES 次，逐字段取众数，结果与 ref.json 对齐）
     skill_name = skill_for_doc_type(doc_type)
     if skill_name is None or not need_parse.lower().startswith(("是", "true", "1")):
         print("无需提取或未知类型:", doc_type, need_parse)
     else:
         results = []
         for _ in range(NUM_VOTES):
-            ext_resp = agent_executor.invoke(
-                {"messages": [("system", extract_prompt(SKILL_FIELDS[skill_name])), ("user", query1)]},
+            extract_agent = make_agent(extract_prompt(SKILL_FIELDS[skill_name]))
+            ext_resp = extract_agent.invoke(
+                {"messages": [("user", query1)]},
                 config={"configurable": {"thread_id": str(uuid7())}},
             )
-            results.append(extract_json(ext_resp.get("messages", [])[-1].content))
+            ext_msg = ext_resp["messages"][-1]
+            raw = extract_json(ext_msg.content)
+            results.append(align_to_ref(raw, skill_name))
         extracted = majority_vote(results)
         extracted.setdefault("文书类型", doc_type)
         print(json.dumps(extracted, ensure_ascii=False, indent=2))

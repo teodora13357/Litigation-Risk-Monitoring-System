@@ -15,7 +15,7 @@ from deepagents.backends.filesystem import FilesystemBackend
 from langchain_core.utils.uuid import uuid7
 
 BASE_URL = "http://192.168.10.250:8000"
-SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/skills")
+SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/Litigation-Risk-Monitoring-System/prompts/skills")
 
 # 文书类型关键词 -> 提取 skill 目录名（包含匹配，容忍分类输出的措辞差异）
 TYPE_TO_SKILL = [
@@ -71,7 +71,7 @@ def _match_skill(name: str) -> str | None:
              "起诉状": "complaint-arbitration-extract", "仲裁申请书": "complaint-arbitration-extract",
              "举证": "evidence-notice-extract", "应诉": "defense-notice-extract",
              "判决": "judgment-ruling-mediation-extract", "裁定": "judgment-ruling-mediation-extract",
-             "调解": "judgment-ruling-mediation-extract", "分类": "document-type-classification"}
+             "调解": "judgment-ruling-mediation-extract", "分类": "file-type-classification"}
     for k, v in alias.items():
         if k in name:
             return v
@@ -83,7 +83,7 @@ def load_skill(skill_name: str) -> str:
     """读取指定 skill 的完整指令（SKILL.md 全文）。
 
     Available skills:
-    - document-type-classification: 文书类型判定
+    - file-type-classification: 文书类型判定
     - summons-hearing-extract: 传票/开庭通知书/改期开庭通知书字段提取
     - evidence-notice-extract: 举证通知书字段提取
     - complaint-arbitration-extract: 起诉状/仲裁申请书字段提取
@@ -107,8 +107,9 @@ def build_model():
     )
 
 
-def make_agent():
-    """构建带默认 SkillsMiddleware + load_skill 工具的 agent（渐进披露，纯文本 JSON 输出）。"""
+def make_agent(system_prompt: str | None = None):
+    """构建带默认 SkillsMiddleware + load_skill 工具的 agent（渐进披露，纯文本 JSON 输出）。
+    通过 system_prompt 传指令，避免额外 system 消息导致服务端模板报错。"""
     model = build_model()
     backend = FilesystemBackend(root_dir=str(SKILLS_ROOT))
     middleware = SkillsMiddleware(backend=backend, sources=["."])
@@ -116,6 +117,7 @@ def make_agent():
         model,
         middleware=[middleware],
         tools=[load_skill],
+        system_prompt=system_prompt,
     )
 
 
@@ -123,7 +125,7 @@ CLASSIFY_PROMPT = """你是一名严谨的法律文书解析专家。
 用户输入一份法律文书。请判断其文书类型。
 
 执行流程（必须按顺序）：
-1. 首先调用 load_skill 工具，传入 skill 名称 "document-type-classification"，读取完整的类型判定规则。
+1. 首先调用 load_skill 工具，传入 skill 名称 "file-type-classification"，读取完整的类型判定规则。
 2. 严格按读取到的 SKILL 判定规则判断文书类型。
 
 判定规则要点：
@@ -176,17 +178,45 @@ def extract_json(text: str) -> dict:
     raise ValueError(f"响应中未找到 JSON: {text[:200]}")
 
 
+def _ref_fields(skill_name: str) -> list[str]:
+    """从 ref.json 读取该 skill 的字段清单（正常分支，去掉提取说明）。"""
+    rf = SKILLS_ROOT / skill_name / "ref.json"
+    sch = json.loads(rf.read_text(encoding="utf-8"))
+    for br in sch.get("oneOf", []):
+        props = br.get("properties", {})
+        if "错误" in props:
+            continue
+        return [k for k in props if k != "提取说明"]
+    return []
+
+
+def align_to_ref(obj: dict, skill_name: str) -> dict:
+    """把模型输出按 ref.json 规整：只保留清单字段，缺失补 null，返回 {字段: 值}。
+    模型输出若已包成 {value: ...} 则取其 value。"""
+    fields = _ref_fields(skill_name)
+    out = {}
+    for f in fields:
+        raw = obj.get(f)
+        if isinstance(raw, dict) and "value" in raw:
+            raw = raw["value"]
+        out[f] = raw
+    notes = obj.get("提取说明")
+    if isinstance(notes, dict):
+        out["提取说明"] = notes
+    return out
+
+
 def invoke_classify(classify_agent_, md_content: str) -> dict:
     response = classify_agent_.invoke(
-        {"messages": [("system", CLASSIFY_PROMPT), ("user", md_content)]},
+        {"messages": [("user", md_content)]},
         config={"configurable": {"thread_id": str(uuid7())}},
     )
     return extract_json(response.get("messages", [])[-1].content)
 
 
-def invoke_extract(extract_agent_, fields: list[str], md_content: str) -> dict:
+def invoke_extract(extract_agent_, md_content: str) -> dict:
     response = extract_agent_.invoke(
-        {"messages": [("system", extract_prompt(fields)), ("user", md_content)]},
+        {"messages": [("user", md_content)]},
         config={"configurable": {"thread_id": str(uuid7())}},
     )
     return extract_json(response.get("messages", [])[-1].content)
@@ -229,7 +259,7 @@ def majority_vote(results: list[dict]) -> dict:
 
 
 def process_document(classify_agent_, md_content: str, num_votes: int = 5) -> dict:
-    """先分类，再按类型加载对应 skill 提取（每字段生成 num_votes 次取众数）。"""
+    """先分类，再按类型加载对应 skill 提取（每字段生成 num_votes 次取众数，结果与 ref.json 对齐）。"""
     cls = invoke_classify(classify_agent_, md_content)
     doc_type = cls.get("文书类型") or ""
     need_parse = str(cls.get("是否需解析") or "").strip()
@@ -240,7 +270,8 @@ def process_document(classify_agent_, md_content: str, num_votes: int = 5) -> di
     if skill_name is None:
         return {"文书类型": doc_type, "提取说明": {"错误": f"无对应提取 skill: {doc_type}"}}
     fields = SKILL_FIELDS[skill_name]
-    results = [invoke_extract(classify_agent_, fields, md_content) for _ in range(num_votes)]
+    extract_agent = make_agent(extract_prompt(fields))
+    results = [align_to_ref(invoke_extract(extract_agent, md_content), skill_name) for _ in range(num_votes)]
     extracted = majority_vote(results)
     extracted.setdefault("文书类型", doc_type)
     return extracted
@@ -354,7 +385,7 @@ def main(root_str: str):
         for f in folders
         if isinstance(ocr_results[f.name], dict)
     )
-    classify_agent_ = make_agent()
+    classify_agent_ = make_agent(CLASSIFY_PROMPT)
     with tqdm(total=total_docs, desc="LLM 提取", unit="文书") as llm_pbar:
         for folder in folders:
             try:
