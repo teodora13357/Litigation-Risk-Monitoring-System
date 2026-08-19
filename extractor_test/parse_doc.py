@@ -429,7 +429,9 @@ def normalize_value(value, field: str):
 # 6. 数字字段溯源兜底重生成：单值匹配 或 加算(子集和) 复合判定
 # ============================================================
 SUMMED_FIELDS = ["诉讼请求金额", "标的额", "赔偿金"]   # 可能由原文若干金额加算的字段
-CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿", "诉请", "判令"]
+CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿", "诉请", "判令", "裁判",
+                  "标的额", "标的金额", "涉案金额", "争议金额",
+                  "赔偿金", "赔偿款", "损害赔偿", "赔偿金额"]
 NUM_TOL = 0        # 单值编辑距离容差
 AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度（如 832552.67 → 832552.665）；溯源判定不使用容差
 MAX_REGEN = 2      # 每个 voter 内数字字段溯源不通过的最大重生成次数
@@ -438,17 +440,26 @@ AMOUNT_TOKEN_RE = r"\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"  #
 
 @lru_cache(maxsize=8)
 def _source_amount_values(text: str, window: int = 100) -> tuple:
-    """原文诉讼请求区金额候选：各触发词后 window 字符内带单位的金额数值列表（应加算的部分）。
+    """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带单位的金额（应加算的部分）。
+    触发词覆盖诉讼请求区 / 标的额 / 赔偿金 / 裁判区（与各 skill 字段触发词对齐）；
+    返回 ((数值, 原文片段), ...) 按数值去重，片段供重生成提示让模型按多段原文复核。
     按原文缓存（provenance_fails/_regen_hint/restore_amount_precision 反复调用，全文只扫描一次）；
     返回 tuple（不可变，防止缓存结果被调用方修改）。"""
     vals = []
+    seen = set()
     for trig in CLAIM_TRIGGERS:
         for m in re.finditer(re.escape(trig), text):
-            seg = text[m.end(): m.end() + window]
+            base = m.end()
+            seg = text[base: base + window]
             for am in re.finditer(AMOUNT_TOKEN_RE, seg):
                 v = _parse_amount(am.group(0))
-                if v is not None and v > 0:
-                    vals.append(v)
+                if v is None or v <= 0 or v in seen:
+                    continue
+                seen.add(v)
+                abs_start = base + am.start()
+                abs_end = base + am.end()
+                ctx = text[max(0, abs_start - 45): abs_end + 15]
+                vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
     return tuple(vals)
 
 
@@ -579,7 +590,7 @@ def provenance_fails(cand: dict, text: str) -> list[str]:
     - 数字字段：单值编辑距离 <= NUM_TOL；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
     - 文本字段：NFKC+去空白归一化后子串编辑距离 <= TEXT_TOL（日期类字段支持年月日数字匹配）
     - null/空/无法解析的值跳过（视为通过）"""
-    claim_vals = _source_amount_values(text)
+    claim_vals = [v for v, _ in _source_amount_values(text)]
     nt = _provenance_norm(text)
     fails = []
     for f, v in cand.items():
@@ -654,7 +665,7 @@ def restore_amount_precision(value, text: str, field: str):
     target = value if isinstance(value, (int, float)) else _parse_amount(value)
     if target is None:
         return value
-    claim_vals = _source_amount_values(text)
+    claim_vals = [v for v, _ in _source_amount_values(text)]
     if not claim_vals:
         return value
     # 1) 直接命中：与原文某金额在舍入容差内 → 用原文全精度
@@ -672,8 +683,10 @@ def restore_amount_precision(value, text: str, field: str):
 
 
 def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
-    """为重生成拼接溯源提示：数字字段给出还原金额与原文金额候选；文本字段提示严格按原文提取。"""
-    claim_vals = "、".join(f"{x}元" for x in sorted(set(_source_amount_values(text)))[:10])
+    """为重生成拼接溯源提示：数字字段给出还原金额，并按多段原文片段让模型复核；
+    文本字段提示严格按原文提取。"""
+    cands = _source_amount_values(text)
+    segs = "；".join(f"[{v}元]「{ctx}」" for v, ctx in cands[:5])
     parts = []
     for f in fails:
         v = cand.get(f)
@@ -682,8 +695,8 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
             restored = restore_amount_precision(v, text, f) if v is not None and str(v).strip() else None
             if restored is not None and str(restored) != str(v):
                 hint += f"，请按原文还原值 {restored}元 输出"
-            if claim_vals:
-                hint += f"（原文诉讼请求区金额候选：{claim_vals}，如需加算请按各项之和）"
+            if segs:
+                hint += f"（原文金额候选及上下文，请逐段复核后提取：{segs}；如需加算请按各项之和）"
         else:
             hint = f"{f} 的提取值 {v} 未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充"
         parts.append(hint)
