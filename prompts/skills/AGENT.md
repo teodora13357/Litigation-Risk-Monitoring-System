@@ -13,4 +13,5 @@
     - judgment-ruling-mediation-extract — 判决书 / 裁定书 / 调解书
     - defense-notice-extract — 应诉通知书 / 参加诉讼通知书
     - summons-hearing-extract — 传票 / 开庭通知书
+    - appeal-extract — 上诉状
 3. 若类型判定结果为"仅归档存储"或"未知类型"，则不执行任何字段提取，按对应 skill 的规则终止。

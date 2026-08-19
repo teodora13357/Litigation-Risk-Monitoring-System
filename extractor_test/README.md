@@ -23,9 +23,10 @@ PDF
                             │    每个 voter:                 │
                             │      agent(extract_prompt)     │
                             │      → align_to_ref(规整字段)  │
-                            │      → number_provenance_fails │
-                            │         单值编辑距离 OR 子集和  │
-                            │      ──不通过──► 带还原值/候选  │
+                            │      → provenance_fails(全字段) │
+                            │         数字:编辑距离/子集和    │
+                            │         文本:归一化后子串编辑距离 │
+                            │      ──不通过──► 带还原值/提示   │
                             │        提示重生成(≤MAX_REGEN)  │
                             └───────────────┬───────────────┘
                                             │
@@ -65,7 +66,7 @@ PDF
 | `TYPE_TO_SKILL` | 关键词 → skill 目录 映射 | 文书类型关键词匹配提取 skill |
 | `SKILL_FIELDS` | skill → 字段清单 | 各类型可提取字段 |
 | `NUMBER_FIELDS` | `["标的额","赔偿金","诉讼请求金额"]` | 数字字段（溯源/归一化/还原） |
-| `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型"]` | 不做溯源的字段（编辑距离为 None） |
+| `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型","标准案由"]` | 不做溯源的字段（编辑距离为 None） |
 | `SUMMED_FIELDS` | `["诉讼请求金额","标的额"]` | 可能由原文若干金额加算的字段 |
 | `CLAIM_TRIGGERS` | 诉讼请求区触发词 | 定位原文金额候选的窗口锚点 |
 | `NUM_TOL` | `0` | 单值编辑距离容差 |
@@ -136,11 +137,11 @@ PDF
 - **`_subset_sum_possible(vals, target, tol, max_terms=12) -> bool`**
   判断是否存在不超过 `max_terms` 项之和与 `target` 相差 ≤ `tol`（正数、降序 + 前缀和剪枝回溯）。溯源判定时以 `tol=0` 做**精确**子集和。
 
-- **`number_provenance_fails(cand, text) -> list[str]`**
-  数字字段溯源复合判定，返回未通过字段列表：
-  1. 单值编辑距离 ≤ `NUM_TOL` → 通过；
-  2. 字段 ∈ `SUMMED_FIELDS` 且值 = 原文金额候选的**精确**子集和 → 通过；
-  其余判不通过（触发重生成）。金额被四舍五入导致不通过时，由还原与重生成提示兜底修正。null/空/无法解析的值跳过（视为通过）。
+- **`provenance_fails(cand, text) -> list[str]`**
+  全字段溯源复合判定（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`），返回未通过字段列表：
+  - **数字字段**：单值编辑距离 ≤ `NUM_TOL` → 通过；字段 ∈ `SUMMED_FIELDS` 且值 = 原文金额候选的**精确**子集和 → 通过；其余判不通过（触发重生成）。
+  - **文本字段**：`NFKC`（全角转半角、CJK 兼容字/部首统一到汉字）+ 去空白归一化后，与原文任意子串的编辑距离 ≤ `TEXT_TOL` → 通过；日期类字段（`应到时间`/`立案日期`/`举证期限`）支持年月日数字分组匹配。
+  - null/空/无法解析的值跳过（视为通过）。
 
 - **`_subset_sum_value(vals, target, tol, max_terms=12) -> int | None`**
   返回与 `target` 相差 ≤ `tol` 的**精确子集和**（缩放整数），用于把被模型四舍五入的加算和还原为全精度；找不到返回 `None`。
@@ -164,7 +165,7 @@ PDF
 
 - **主流程（voter 循环 + 输出包装）**
   1. 判型；`skill_for_doc_type` 命中且需解析时进入提取；
-  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `number_provenance_fails` 判定；不通过则带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
+  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段）；不通过则带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
   3. `majority_vote` 取众数；
   4. `field_provenance` 先对原始输出溯源，再 `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度，金额字段的 `编辑距离` 按还原后的值重算；
   5. 输出 `{字段: {value, 编辑距离, 置信度}, 提取说明, 文书类型}`。

@@ -115,6 +115,14 @@ def _unwrap_value(v):
     return v
 
 
+def _unwrap_confidence(v):
+    """结果字段 {value, 编辑距离, 置信度} 中的置信度（0-100）；无则 None。"""
+    if isinstance(v, dict) and "value" in v and "编辑距离" in v:
+        c = v.get("置信度")
+        return c if isinstance(c, (int, float)) else None
+    return None
+
+
 def _strip_space(v):
     """去除字符串中的全部空白（含全角空格），用于案号比较。"""
     if isinstance(v, str):
@@ -142,8 +150,8 @@ def compare_folder(folder: Path) -> dict:
     results_map = {norm_key(k): v for k, v in results.items()}
     gt_map = {norm_key(k): v for k, v in gt.items()}
 
-    field_stats = {}  # 字段名 -> [matched, total]
-    doc_stats = {}    # 文档名 -> {matched, total, 各字段对比}
+    field_stats = {}  # 字段名 -> {"matched","total","conf_sum","conf_count"}
+    doc_stats = {}    # 文档名 -> {matched, total, avg_置信度, 各字段对比}
 
     for gk, gv in gt_map.items():
         rk = next((k for k in results_map if k == gk), None)
@@ -154,39 +162,57 @@ def compare_folder(folder: Path) -> dict:
 
         doc_matched = 0
         doc_total = 0
+        doc_conf_sum = 0.0
+        doc_conf_count = 0
         field_results = {}
         for field, gt_val in gv.items():
             if field == "提取说明":
                 continue
             doc_total += 1
-            res_val = _unwrap_value(rv.get(field))
+            raw_res = rv.get(field)
+            res_val = _unwrap_value(raw_res)
+            conf = _unwrap_confidence(raw_res)
             # 案号比较前去除所有空格（gt 与结果可能带/不带空格）
             cmp_gt = _strip_space(gt_val) if field == "案号" else gt_val
             cmp_res = _strip_space(res_val) if field == "案号" else res_val
             ok = values_equal(cmp_gt, cmp_res)
             if ok:
                 doc_matched += 1
-            field_stats.setdefault(field, [0, 0])
-            field_stats[field][1] += 1
+            st = field_stats.setdefault(field, {"matched": 0, "total": 0, "conf_sum": 0.0, "conf_count": 0})
+            st["total"] += 1
             if ok:
-                field_stats[field][0] += 1
+                st["matched"] += 1
+            if conf is not None:
+                st["conf_sum"] += conf
+                st["conf_count"] += 1
+                doc_conf_sum += conf
+                doc_conf_count += 1
             field_results[field] = {
                 "匹配": ok,
                 "gt": gt_val,
                 "结果": res_val,
+                "置信度": conf,
             }
         doc_stats[gk] = {
             "matched": doc_matched,
             "total": doc_total,
             "match_rate": round(doc_matched / doc_total, 4) if doc_total else None,
+            "avg_置信度": round(doc_conf_sum / doc_conf_count, 1) if doc_conf_count else None,
             "字段": field_results,
         }
 
     # 汇总
-    total_matched = sum(v[0] for v in field_stats.values())
-    total_fields = sum(v[1] for v in field_stats.values())
+    total_matched = sum(v["matched"] for v in field_stats.values())
+    total_fields = sum(v["total"] for v in field_stats.values())
+    total_conf_sum = sum(v["conf_sum"] for v in field_stats.values())
+    total_conf_count = sum(v["conf_count"] for v in field_stats.values())
     field_rates = {
-        f: {"matched": v[0], "total": v[1], "match_rate": round(v[0] / v[1], 4) if v[1] else None}
+        f: {
+            "matched": v["matched"],
+            "total": v["total"],
+            "match_rate": round(v["matched"] / v["total"], 4) if v["total"] else None,
+            "avg_置信度": round(v["conf_sum"] / v["conf_count"], 1) if v["conf_count"] else None,
+        }
         for f, v in sorted(field_stats.items())
     }
     return {
@@ -199,6 +225,7 @@ def compare_folder(folder: Path) -> dict:
         "total_matched": total_matched,
         "total_fields": total_fields,
         "total_match_rate": round(total_matched / total_fields, 4) if total_fields else None,
+        "avg_置信度": round(total_conf_sum / total_conf_count, 1) if total_conf_count else None,
     }
 
 
@@ -211,16 +238,22 @@ def main(root_str: str):
 
     all_matched = 0
     all_total = 0
+    all_conf_sum = 0.0
+    all_conf_count = 0
     for folder in folders:
         res = compare_folder(folder)
         report["folders"].append(res)
         if res.get("total_fields"):
             all_matched += res["total_matched"]
             all_total += res["total_fields"]
+            if res.get("avg_置信度") is not None:
+                all_conf_sum += res["avg_置信度"] * res["doc_count"]
+                all_conf_count += res["doc_count"]
 
     report["overall_matched"] = all_matched
     report["overall_total"] = all_total
     report["overall_match_rate"] = round(all_matched / all_total, 4) if all_total else None
+    report["overall_avg_置信度"] = round(all_conf_sum / all_conf_count, 1) if all_conf_count else None
 
     out_path = root / "eval_report.json"
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

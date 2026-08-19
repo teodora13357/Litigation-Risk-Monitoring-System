@@ -2,6 +2,7 @@ import json
 import re
 import sys
 import time
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
@@ -96,7 +97,7 @@ def build_model():
     return ChatOpenAI(
         base_url="http://192.168.10.250:8006",
         api_key="None",
-        model="Qwen3.8-27B",
+        model="Qwen3.6-27B",
         max_tokens=None,
         temperature=0.1,
         top_p=0.9,
@@ -215,7 +216,7 @@ def invoke_classify(classify_agent_, md_content: str) -> dict:
 # 溯源：全字段编辑距离（源头=文书原文，输出=字段值）
 # ============================================================
 NUMBER_FIELDS = ["标的额", "赔偿金", "诉讼请求金额"]
-SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型"]  # 这些字段不做溯源（编辑距离固定为 None）
+SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型", "标准案由"]  # 这些字段不做溯源（编辑距离固定为 None）
 
 
 def _normalize_number(s: str) -> str:
@@ -454,34 +455,105 @@ def _subset_sum_possible(vals, target, tol, max_terms: int = 12) -> bool:
     return dfs(0, target, 0)
 
 
-def number_provenance_fails(cand: dict, text: str) -> list[str]:
-    """数字字段溯源复合判定，返回未通过的字段列表。
-    通过条件：单值编辑距离 <= NUM_TOL；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）。
-    金额被模型四舍五入导致不通过时，最终输出由 restore_amount_precision 还原为原文全精度。
-    null/空/无法解析的值跳过（视为通过）。"""
+TEXT_TOL = 0  # 文本字段溯源容差（NFKC + 去空白归一化后）
+DATE_FIELDS = ["应到时间", "立案日期", "举证期限"]  # 日期类字段：溯源额外支持年月日数字匹配
+
+
+def _digit_groups(s) -> list[str]:
+    """提取文本中的数字分组（去前导零），如 "2026-06-29 09:00" -> ["2026","6","29","9","0"]。"""
+    return [str(int(m)) for m in re.findall(r"\d+", str(s))]
+
+
+def _date_digits_match(value, text: str) -> bool:
+    """日期类字段溯源：值中年月日三元组须在原文数字分组中连续出现（容忍中文/ISO/零填充格式差异）。"""
+    vg = _digit_groups(value)
+    tg = _digit_groups(text)
+    if len(vg) < 3:
+        return False
+    triple = tuple(vg[:3])
+    return any(tuple(tg[i:i + 3]) == triple for i in range(len(tg) - 2))
+
+
+# CJK 部首补充块（U+2E80-U+2EFF）部分字符无 NFKC 分解（如 ⺠→民、⻋→车），需手动映射到简体汉字
+_CJK_RAD_SUP = {
+    0x2EA0: "民", 0x2EC5: "见", 0x2EC9: "贝", 0x2ECB: "车", 0x2ED0: "钅",
+    0x2ED1: "长", 0x2ED2: "长", 0x2ED3: "长", 0x2ED4: "门", 0x2ED9: "革",
+    0x2EDA: "页", 0x2EDB: "风", 0x2EDC: "飞", 0x2EE0: "饣", 0x2EE2: "马",
+    0x2EE5: "鱼", 0x2EE6: "鸟", 0x2EE7: "卤", 0x2EE8: "麦", 0x2EE9: "黄",
+    0x2EEC: "齐", 0x2EEE: "齿", 0x2EF0: "龙", 0x2EF2: "龟", 0x2EF3: "龟",
+}
+
+
+def _provenance_norm(s) -> str:
+    """归一化文本用于溯源比较：NFKC（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射 + 去空白。"""
+    t = unicodedata.normalize("NFKC", str(s))
+    t = "".join(_CJK_RAD_SUP.get(ord(c), c) for c in t)
+    return re.sub(r"\s+", "", t)
+
+
+def _text_provenance_dist(value, text: str, field: str, nt: str | None = None) -> int | None:
+    """文本字段溯源距离：列表取最差项；归一化后与原文任意子串的编辑距离；
+    日期类字段先做年月日数字匹配（命中返回 0）。"""
+    if isinstance(value, dict):
+        if "value" not in value:
+            return None
+        value = value["value"]
+    if value is None or value == "":
+        return None
+    if isinstance(value, (list, tuple)):
+        ds = [_text_provenance_dist(v, text, field, nt) for v in value]
+        ds = [d for d in ds if d is not None]
+        return max(ds) if ds else 0
+    s = str(value).strip()
+    if not s:
+        return None
+    nv = _provenance_norm(s)
+    if not nv:
+        return None
+    if nt is None:
+        nt = _provenance_norm(text)
+    if nv in nt:
+        return 0
+    if field in DATE_FIELDS and _date_digits_match(s, text):
+        return 0
+    return _min_substring_edit_dist(nv, nt)
+
+
+def provenance_fails(cand: dict, text: str) -> list[str]:
+    """全字段溯源复合判定（除 SKIP_PROVENANCE_FIELDS 与 提取说明），返回未通过、需重生成的字段列表：
+    - 数字字段：单值编辑距离 <= NUM_TOL；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
+    - 文本字段：NFKC+去空白归一化后子串编辑距离 <= TEXT_TOL（日期类字段支持年月日数字匹配）
+    - null/空/无法解析的值跳过（视为通过）"""
     claim_vals = _source_amount_values(text)
+    nt = _provenance_norm(text)
     fails = []
-    for f in NUMBER_FIELDS:
-        v = cand.get(f)
+    for f, v in cand.items():
+        if f == "提取说明" or f in SKIP_PROVENANCE_FIELDS:
+            continue
         if v is None or v == "":
             continue
-        if isinstance(v, (int, float)):
-            target = v  # 保留小数，不截断
-        else:
-            parsed = _parse_amount(v)
-            if parsed is None:
+        if f in NUMBER_FIELDS:
+            if isinstance(v, (int, float)):
+                target = v  # 保留小数，不截断
+            else:
+                parsed = _parse_amount(v)
+                if parsed is None:
+                    continue
+                target = parsed
+            # 1) 单值编辑距离
+            d = _best_token_dist(str(target), text)
+            if d is not None and d <= NUM_TOL:
                 continue
-            target = parsed
-        # 1) 单值编辑距离
-        d = _best_token_dist(str(target), text)
-        if d is not None and d <= NUM_TOL:
+            # 2) 加算：子集和（按最大小数位缩放为整数，保留全部小数精确比较）
+            if f in SUMMED_FIELDS:
+                ints, itarget, _, _ = _scale_to_int(claim_vals, target)
+                if _subset_sum_possible(ints, itarget, 0):
+                    continue
+            fails.append(f)
             continue
-        # 2) 加算：子集和（按最大小数位缩放为整数，保留全部小数精确比较）
-        if f in SUMMED_FIELDS:
-            ints, itarget, _, _ = _scale_to_int(claim_vals, target)
-            if _subset_sum_possible(ints, itarget, 0):
-                continue
-        fails.append(f)
+        d = _text_provenance_dist(v, text, f, nt)
+        if d is not None and d > TEXT_TOL:
+            fails.append(f)
     return fails
 
 
@@ -545,18 +617,20 @@ def restore_amount_precision(value, text: str, field: str):
 
 
 def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
-    """为重生成拼接溯源提示：列出未通过字段的提取值、restore_amount_precision 还原出的最接近原文金额，
-    以及原文诉讼请求区金额候选，供模型参考后重新提取。"""
+    """为重生成拼接溯源提示：数字字段给出还原金额与原文金额候选；文本字段提示严格按原文提取。"""
     claim_vals = "、".join(f"{x}元" for x in sorted(set(_source_amount_values(text)))[:10])
     parts = []
     for f in fails:
         v = cand.get(f)
-        hint = f"{f} 的提取值 {v} 无法由原文金额验证"
-        restored = restore_amount_precision(v, text, f) if v is not None and str(v).strip() else None
-        if restored is not None and str(restored) != str(v):
-            hint += f"，请按原文还原值 {restored}元 输出"
-        if claim_vals:
-            hint += f"（原文诉讼请求区金额候选：{claim_vals}，如需加算请按各项之和）"
+        if f in NUMBER_FIELDS:
+            hint = f"{f} 的提取值 {v} 无法由原文金额验证"
+            restored = restore_amount_precision(v, text, f) if v is not None and str(v).strip() else None
+            if restored is not None and str(restored) != str(v):
+                hint += f"，请按原文还原值 {restored}元 输出"
+            if claim_vals:
+                hint += f"（原文诉讼请求区金额候选：{claim_vals}，如需加算请按各项之和）"
+        else:
+            hint = f"{f} 的提取值 {v} 未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充"
         parts.append(hint)
     return "；".join(parts)
 
@@ -570,17 +644,17 @@ def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
 
 
 def extract_voter(extract_agent_, skill_name: str, text: str) -> dict:
-    """单个 voter：提取并做数字溯源兜底重生成，返回溯源合格的结果。"""
+    """单个 voter：提取并做全字段溯源兜底重生成（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。"""
     cand, fails = None, []
     for attempt in range(MAX_REGEN + 1):
         msgs = [("user", text)]
         if attempt > 0 and fails:
             msgs.append(("user", f"溯源提示：{_regen_hint(fails, cand, text)}。请重新提取。"))
         cand = align_to_ref(invoke_extract_msgs(extract_agent_, msgs), skill_name)
-        fails = number_provenance_fails(cand, text)
+        fails = provenance_fails(cand, text)
         if not fails:
             break
-        print(f"[voter] 数字字段溯源不通过 {str({f: cand.get(f) for f in fails})}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
+        print(f"[voter] 字段溯源不通过 {str({f: cand.get(f) for f in fails})}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
     return cand
 
 
@@ -635,12 +709,10 @@ def majority_vote(results: list[dict]) -> tuple:
 
 
 NUM_VOTES = 20  # 与 parse_doc.py 对齐：每篇文书投票数
-VOTER_PARALLEL = 2  # voter 并发数（两个两个并行提取）
 
 
 def process_document(classify_agent_, md_content: str, num_votes: int = NUM_VOTES) -> dict:
-    """先分类，再按类型加载对应 skill 提取（voter 并发 VOTER_PARALLEL 个一组，每 voter 数字溯源兜底重生成，
-    投票后每字段包装 value/编辑距离/置信度）。"""
+    """先分类，再按类型加载对应 skill 提取（每 voter 数字溯源兜底重生成，投票后每字段包装 value/编辑距离/置信度）。"""
     cls = invoke_classify(classify_agent_, md_content)
     doc_type = cls.get("文书类型") or ""
     need_parse = str(cls.get("是否需解析") or "").strip()
@@ -651,17 +723,8 @@ def process_document(classify_agent_, md_content: str, num_votes: int = NUM_VOTE
     if skill_name is None:
         return {"文书类型": doc_type, "提取说明": {"错误": f"无对应提取 skill: {doc_type}"}}
     fields = SKILL_FIELDS[skill_name]
-    prompt = extract_prompt(fields)
-    results = []
-    with ThreadPoolExecutor(max_workers=VOTER_PARALLEL) as executor:
-        # 每个 voter 独立建 agent（避免共享实例跨线程并发调用）
-        futures = [executor.submit(extract_voter, make_agent(prompt), skill_name, md_content)
-                   for _ in range(num_votes)]
-        for future in as_completed(futures):
-            try:
-                results.append(future.result())
-            except Exception as e:
-                print(f"[voter] 提取异常: {e}", flush=True)
+    extract_agent = make_agent(extract_prompt(fields))
+    results = [extract_voter(extract_agent, skill_name, md_content) for _ in range(num_votes)]
     extracted, counts = majority_vote(results)
     return wrap_extracted(extracted, counts, md_content, doc_type, num_votes)
 
