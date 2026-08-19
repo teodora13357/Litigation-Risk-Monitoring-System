@@ -40,8 +40,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -65,8 +65,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -90,8 +90,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -115,8 +115,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -137,8 +137,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -159,8 +159,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -181,8 +181,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -203,8 +203,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -225,8 +225,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -247,8 +247,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -269,8 +269,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -325,7 +325,7 @@
             },
             "标的额": {
               "type": "string",
-              "description": "已提取:原始文本XXX | 未命中触发词 | 触发词命中但未匹配到金额"
+              "description": "已提取:原文标的额XXX | 已提取:以诉讼请求金额代替XXX | 未命中触发词 | 触发词命中但未匹配到金额"
             },
             "赔偿金": {
               "type": "string",

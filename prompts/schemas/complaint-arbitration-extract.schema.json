@@ -17,6 +17,7 @@
         "受理法院/仲裁委",
         "标的额",
         "诉讼请求金额",
+        "赔偿金",
         "提取说明"
       ],
       "properties": {
@@ -40,8 +41,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -65,8 +66,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -90,8 +91,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -112,8 +113,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -134,8 +135,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -156,8 +157,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -178,8 +179,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -200,8 +201,30 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
+            }
+          }
+        },
+        "赔偿金": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "description": "数值(元) 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -216,7 +239,8 @@
             "标准案由",
             "受理法院/仲裁委",
             "标的额",
-            "诉讼请求金额"
+            "诉讼请求金额",
+            "赔偿金"
           ],
           "properties": {
             "原告/申请人": {
@@ -245,9 +269,13 @@
             },
             "标的额": {
               "type": "string",
-              "description": "已提取:原始文本XXX | 未命中触发词 | 触发词命中但未匹配到金额"
+              "description": "已提取:原文标的额XXX | 已提取:以诉讼请求金额代替XXX | 未命中触发词 | 触发词命中但未匹配到金额"
             },
             "诉讼请求金额": {
+              "type": "string",
+              "description": "已提取:原始文本XXX | 未命中触发词 | 触发词命中但未匹配到金额"
+            },
+            "赔偿金": {
               "type": "string",
               "description": "已提取:原始文本XXX | 未命中触发词 | 触发词命中但未匹配到金额"
             }

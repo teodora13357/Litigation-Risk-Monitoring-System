@@ -108,6 +108,20 @@ def load_gt(path: Path) -> dict:
     return out
 
 
+def _unwrap_value(v):
+    """结果字段可能是 {value, 编辑距离, 置信度} 包装，取其中的 value；否则原样返回。"""
+    if isinstance(v, dict) and "value" in v and "编辑距离" in v:
+        return v["value"]
+    return v
+
+
+def _strip_space(v):
+    """去除字符串中的全部空白（含全角空格），用于案号比较。"""
+    if isinstance(v, str):
+        return re.sub(r"\s+", "", v)
+    return v
+
+
 def compare_folder(folder: Path) -> dict:
     """对比一个文件夹的 results 与 gt，返回字段统计。"""
     results_files = sorted(folder.glob("*_results.json"))
@@ -145,8 +159,11 @@ def compare_folder(folder: Path) -> dict:
             if field == "提取说明":
                 continue
             doc_total += 1
-            res_val = rv.get(field)
-            ok = values_equal(gt_val, res_val)
+            res_val = _unwrap_value(rv.get(field))
+            # 案号比较前去除所有空格（gt 与结果可能带/不带空格）
+            cmp_gt = _strip_space(gt_val) if field == "案号" else gt_val
+            cmp_res = _strip_space(res_val) if field == "案号" else res_val
+            ok = values_equal(cmp_gt, cmp_res)
             if ok:
                 doc_matched += 1
             field_stats.setdefault(field, [0, 0])
