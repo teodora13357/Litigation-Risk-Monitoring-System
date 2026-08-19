@@ -44,8 +44,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -69,8 +69,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -94,8 +94,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -119,8 +119,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -141,8 +141,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -163,8 +163,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -185,8 +185,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -207,8 +207,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -253,8 +253,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -275,8 +275,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -297,8 +297,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -319,8 +319,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -342,8 +342,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -365,8 +365,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },
@@ -388,8 +388,8 @@
             "置信度": {
               "type": "number",
               "minimum": 0,
-              "maximum": 1,
-              "description": "该字段提取置信度，由后处理根据 logprobs 计算，模型不输出此字段"
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
             }
           }
         },

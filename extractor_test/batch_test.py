@@ -96,7 +96,7 @@ def build_model():
     return ChatOpenAI(
         base_url="http://192.168.10.250:8006",
         api_key="None",
-        model="Qwen3.6-27B",
+        model="Qwen3.8-27B",
         max_tokens=None,
         temperature=0.1,
         top_p=0.9,
