@@ -26,7 +26,8 @@ PDF
                             │      → provenance_fails(全字段) │
                             │         数字:编辑距离/子集和    │
                             │         文本:归一化后子串编辑距离 │
-                            │      ──不通过──► 带还原值/提示   │
+                            │      ──不通过──► 日志(编辑距离+ │
+                            │        原文片段) + 带还原值/提示 │
                             │        提示重生成(≤MAX_REGEN)  │
                             └───────────────┬───────────────┘
                                             │
@@ -52,8 +53,8 @@ PDF
 - 编辑距离 = 字段值（最终值）与原文最佳匹配的最小 Levenshtein 距离
 - 置信度 = N 次 vote 中众数出现次数 / N 的百分数
 - 数字字段 = `标的额` / `赔偿金` / `诉讼请求金额`（`NUMBER_FIELDS`）
-- 加算字段 = `诉讼请求金额`、`标的额`（输出可能是若干原文金额之和，用子集和验证）
-- 重生成只由「数字字段溯源不通过」触发，非数字字段永不重生成
+- 加算字段 = `诉讼请求金额`、`标的额`、`赔偿金`（输出可能是若干原文金额之和，用子集和验证）
+- 重生成由「字段溯源不通过」触发（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`）：数字字段走编辑距离/子集和，文本字段走归一化（NFKC+去空白+去标点，保留小数点）后子串编辑距离
 
 ---
 
@@ -67,11 +68,13 @@ PDF
 | `SKILL_FIELDS` | skill → 字段清单 | 各类型可提取字段 |
 | `NUMBER_FIELDS` | `["标的额","赔偿金","诉讼请求金额"]` | 数字字段（溯源/归一化/还原） |
 | `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型","标准案由"]` | 不做溯源的字段（编辑距离为 None） |
-| `SUMMED_FIELDS` | `["诉讼请求金额","标的额"]` | 可能由原文若干金额加算的字段 |
+| `SUMMED_FIELDS` | `["诉讼请求金额","标的额","赔偿金"]` | 可能由原文若干金额加算的字段 |
 | `CLAIM_TRIGGERS` | 诉讼请求区触发词 | 定位原文金额候选的窗口锚点 |
-| `NUM_TOL` | `0` | 单值编辑距离容差 |
+| `NUM_TOL` | `0` | 单值编辑距离容差（数字字段） |
+| `TEXT_TOL` | `0` | 文本字段溯源容差（NFKC + 去空白 + 去标点（保留小数点 `.`）后） |
+| `DATE_FIELDS` | `["应到时间","立案日期","举证期限"]` | 日期类字段：溯源额外支持年月日数字分组匹配 |
 | `AMOUNT_TOL` | `0.0051` | 金额舍入容差(元)：仅供还原用，溯源判定不用 |
-| `MAX_REGEN` | `2` | 每个 voter 内数字字段溯源不通过的最大重生成次数 |
+| `MAX_REGEN` | `2` | 每个 voter 内字段溯源不通过的最大重生成次数 |
 | `AMOUNT_TOKEN_RE` | 带单位的金额正则 | 排除年份/案号，只认带单位金额 |
 
 ---
@@ -90,7 +93,7 @@ PDF
   构建 agent：默认挂 `SkillsMiddleware`（根目录 `prompts/skills`）+ `load_skill` 工具，通过 `system_prompt` 传指令，避免额外 system 消息导致服务端模板报错。
 
 - **`_ref_fields(skill_name) -> list[str]`**
-  读该 skill 的 `ref.json`，取正常分支的 `properties` 键并去掉 `提取说明`，得到字段清单（用于规整与校验输出）。
+  读该 skill 的 `ref.json`，取正常分支的 `properties` 键并去掉 `提取说明`，得到字段清单（用于规整与校验输出）。**按 skill 名缓存**（`@lru_cache`）：每个进程只读一次磁盘；修改 `ref.json` 后需 `_ref_fields.cache_clear()` 或重启进程。
 
 - **`extract_json(text) -> dict`**
   从模型输出中提取首个合法 JSON 对象：先剥掉 json 代码块围栏（json 或纯文本），再逐 `{` 位置 `raw_decode`，容忍前后夹杂的分析文本。
@@ -106,8 +109,14 @@ PDF
 - **`_normalize_number(s) -> str`**
   归一化数字写法：去空白、千分位逗号/顿号、`元/人民币/万元/亿` 等后缀、全角转半角，便于数字比较。
 
+- **`_text_number_tokens(text) -> tuple`**（`@lru_cache`）
+  原文中的数字 token 列表（含预解析结果），按原文缓存供 `_best_token_dist` 复用：每项为 `(原始串, 数值, 归一化串)`，避免重复全文扫描与逐 token 解析。全文只扫描一次。
+
+- **`_lev(a, b) -> int`**
+  两字符串的 Levenshtein 编辑距离（滚动数组 DP），供 `_best_token_dist` 复用。
+
 - **`_best_token_dist(value, text) -> int | None`**
-  归一化后的数字串与原文中**每个数字 token** 的最小 Levenshtein 距离；原文无 token 返回 `None`。
+  归一化后的数字串与原文中**每个数字 token** 的最小 Levenshtein 距离；原文无 token 返回 `None`。token 列表经 `_text_number_tokens` 按原文缓存；带 `万元/亿元` 等单位的 token 先按数值比较（如 `8万元` 可匹配 `80000`）。
 
 - **`_min_substring_edit_dist(value, text) -> int`**
   文本值与原文**任意连续子串**的最小编辑距离（子串首尾可自由裁剪）；先做逐字命中快速路径，未命中再跑 DP。
@@ -128,8 +137,8 @@ PDF
 
 ### 3.4 数字字段溯源兜底重生成
 
-- **`_source_amount_values(text, window=100) -> list[int]`**
-  从原文诉讼请求区抽取金额候选：各 `CLAIM_TRIGGERS` 触发词后 `window` 字符内匹配带单位金额（`AMOUNT_TOKEN_RE`）并解析为数值。
+- **`_source_amount_values(text, window=100) -> tuple`**（`@lru_cache`）
+  从原文诉讼请求区抽取金额候选：各 `CLAIM_TRIGGERS` 触发词后 `window` 字符内匹配带单位金额（`AMOUNT_TOKEN_RE`）并解析为数值。**按原文缓存**（`provenance_fails` / `_regen_hint` / `restore_amount_precision` 反复调用，全文只扫描一次）；返回 `tuple`（不可变，防缓存被改）。
 
 - **`_scale_to_int(vals, target) -> (list[int], int, int, int)`**
   按候选与目标的最大小数位数求缩放，把元金额转成整数（**用 Decimal 精确缩放，不做四舍五入**）；返回 `(整数列表, 目标整数, scale, tol_int)`，其中 `tol_int` 为舍入容差的缩放值，仅供还原用。
@@ -140,7 +149,7 @@ PDF
 - **`provenance_fails(cand, text) -> list[str]`**
   全字段溯源复合判定（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`），返回未通过字段列表：
   - **数字字段**：单值编辑距离 ≤ `NUM_TOL` → 通过；字段 ∈ `SUMMED_FIELDS` 且值 = 原文金额候选的**精确**子集和 → 通过；其余判不通过（触发重生成）。
-  - **文本字段**：`NFKC`（全角转半角、CJK 兼容字/部首统一到汉字）+ 去空白归一化后，与原文任意子串的编辑距离 ≤ `TEXT_TOL` → 通过；日期类字段（`应到时间`/`立案日期`/`举证期限`）支持年月日数字分组匹配。
+  - **文本字段**：`NFKC`（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射 + **去空白 + 去除标点（保留小数点 `.`）**后，与原文任意子串的编辑距离 ≤ `TEXT_TOL` → 通过；日期类字段（`应到时间`/`立案日期`/`举证期限`）支持年月日数字分组匹配。
   - null/空/无法解析的值跳过（视为通过）。
 
 - **`_subset_sum_value(vals, target, tol, max_terms=12) -> int | None`**
@@ -152,8 +161,11 @@ PDF
   2. 加算命中：`SUMMED_FIELDS` 中存在子集和与目标在容差内 → 用该精确和；
   无对应原文金额时原样返回。
 
+- **`_best_source_snippet(value, text, field, win=16) -> (int, str)`**
+  溯源调试信息：返回字段值在原文中的 `(编辑距离, 原文片段)`。优先定位原文中的原始值/归一化值并截取 ±win 字符上下文；找不到时粗略扫描与值最相似的连续片段。用于 voter 溯源失败日志。
+
 - **`_regen_hint(fails, cand, text) -> str`**
-  为重生成拼接溯源提示：逐字段列出「提取值无法由原文金额验证」、`restore_amount_precision` 还原出的**最接近原文金额**（请模型按此输出），以及原文诉讼请求区金额候选（如需加算请按各项之和）。
+  为重生成拼接溯源提示：**数字字段**逐字段列出「提取值无法由原文金额验证」、`restore_amount_precision` 还原出的**最接近原文金额**（请模型按此输出）、以及原文诉讼请求区金额候选（如需加算请按各项之和）；**文本字段**提示「提取值未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充」。
 
 ### 3.5 Prompt 与主流程
 
@@ -165,7 +177,7 @@ PDF
 
 - **主流程（voter 循环 + 输出包装）**
   1. 判型；`skill_for_doc_type` 命中且需解析时进入提取；
-  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段）；不通过则带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
+  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段）；不通过则打印溯源日志（字段值 + 编辑距离 + 原文片段，见 `_best_source_snippet`）并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
   3. `majority_vote` 取众数；
   4. `field_provenance` 先对原始输出溯源，再 `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度，金额字段的 `编辑距离` 按还原后的值重算；
   5. 输出 `{字段: {value, 编辑距离, 置信度}, 提取说明, 文书类型}`。
@@ -206,3 +218,23 @@ PDF
 - 溯源判定**不设金额容差**：`832552.67`（≠ 原文 `832552.665`）会判不通过并触发重生成。
 - 重生成提示携带 `restore_amount_precision` 还原出的最接近原文金额，引导模型按全精度输出。
 - 最终输出**仍由 `restore_amount_precision` 兜底还原**，保证 value 小数位与原文一致。
+
+---
+
+## 六、调用整合：全文级计算缓存（性能）
+
+一份文书的处理含 **20 个 voter × 最多 3 次提取尝试**，多处以**整篇文书全文**为输入的纯计算被反复调用。已用 `functools.lru_cache` 整合，全文级计算每份文书每种只算 1 次：
+
+| 函数 | 缓存键 | 无缓存调用次数/文书 | 缓存后 |
+|---|---|---|---|
+| `_provenance_norm` | 输入字符串 | 60~240 次全文 NFKC+去标点 | 1 次（命中率 >95%） |
+| `_source_amount_values` | 原文 | 60~220 次全文正则扫描 | 1 次 |
+| `_text_number_tokens` | 原文 | `_best_token_dist` 每次重复全文扫描+逐 token 解析 | 1 次 |
+| `_digit_groups` | 输入字符串 | 日期溯源每次全文 `\d+` 扫描 | 1 次 |
+| `_ref_fields` | skill 名 | 60 次读 `ref.json`+JSON 解析 | 每 skill 1 次 |
+
+注意事项：
+
+- **返回类型**：`_source_amount_values` / `_digit_groups` 改为返回 `tuple`（不可变，防止调用方改动污染缓存）。
+- **热更新**：`_ref_fields` 按 skill 名缓存，**修改 `ref.json` 后需 `_ref_fields.cache_clear()` 或重启进程**；`load_skill`（读 `SKILL.md`）**不缓存**，改 prompt 即时生效。
+- 缓存随进程生命周期常驻，`batch_test.py` / `parse_doc.py` 每次运行即新进程，天然干净；`langchain.ipynb` 同一内核反复运行时，改 `ref.json` 后请手动 `_ref_fields.cache_clear()`。

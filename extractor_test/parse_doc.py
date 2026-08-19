@@ -3,6 +3,7 @@ import re
 import time
 import unicodedata
 from decimal import Decimal, ROUND_CEILING
+from functools import lru_cache
 from pathlib import Path
 import requests
 
@@ -172,8 +173,11 @@ def make_agent(system_prompt: str | None = None):
     )
 
 
+@lru_cache(maxsize=16)
 def _ref_fields(skill_name: str) -> list[str]:
-    """从 ref.json 读取该 skill 的字段清单（正常分支，去掉提取说明）。"""
+    """从 ref.json 读取该 skill 的字段清单（正常分支，去掉提取说明）。
+    按 skill 名缓存：每个进程只读一次磁盘（align_to_ref 每个 voter/attempt 都会调用）；
+    修改 ref.json 后需 `_ref_fields.cache_clear()` 或重启进程。"""
     rf = SKILLS_ROOT / skill_name / "ref.json"
     sch = json.loads(rf.read_text(encoding="utf-8"))
     for br in sch.get("oneOf", []):
@@ -260,23 +264,37 @@ def _normalize_number(s: str) -> str:
     return t.strip()
 
 
-def _best_token_dist(value: str, text: str) -> int | None:
-    """value(归一化数字串) 与 text 中各数字 token 的最小编辑距离；无 token 返回 None。"""
-    def _lev(a: str, b: str) -> int:
-        if a == b:
-            return 0
-        if not a:
-            return len(b)
-        if not b:
-            return len(a)
-        prev = list(range(len(b) + 1))
-        for i, ca in enumerate(a, 1):
-            cur = [i]
-            for j, cb in enumerate(b, 1):
-                cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-            prev = cur
-        return prev[-1]
+@lru_cache(maxsize=8)
+def _text_number_tokens(text: str) -> tuple:
+    """原文中的数字 token 列表（含预解析结果），按原文缓存供 _best_token_dist 复用，避免重复全文扫描。
+    每项为 (原始串, 数值, 归一化串)：数值供万元/亿元等带单位 token 的数值比较，归一化串供编辑距离。"""
+    out = []
+    for m in re.finditer(r"[\d，,．.][\d，,．.]*(?:\s*(?:万元|亿元|元|人民币|￥|¥))?", text):
+        raw = m.group(0)
+        out.append((raw, _parse_amount(raw), _normalize_number(raw)))
+    return tuple(out)
 
+
+def _lev(a: str, b: str) -> int:
+    """两字符串的 Levenshtein 编辑距离（滚动数组 DP）。"""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _best_token_dist(value: str, text: str) -> int | None:
+    """value(归一化数字串) 与 text 中各数字 token 的最小编辑距离；无 token 返回 None。
+    token 列表按原文缓存（_text_number_tokens），重复调用只做距离计算。"""
     v = _normalize_number(value)
     if not v:
         return None
@@ -286,17 +304,13 @@ def _best_token_dist(value: str, text: str) -> int | None:
         v_num = None
     best = None
     # 数字 token：允许千分位逗号、小数、前后可带 元/人民币 等单位
-    for m in re.finditer(r"[\d，,．.][\d，,．.]*(?:\s*(?:万元|亿元|元|人民币|￥|¥))?", text):
-        raw = m.group(0)
+    for raw, parsed, norm in _text_number_tokens(text):
         # 带 万元/亿元 等单位的 token 先按数值比较（如 "8万元" 可匹配 80000）
-        if v_num is not None:
-            p = _parse_amount(raw)
-            if p is not None and p == v_num:
-                return 0
-        cand = _normalize_number(raw)
-        if not cand:
+        if v_num is not None and parsed is not None and parsed == v_num:
+            return 0
+        if not norm:
             continue
-        d = _lev(v, cand)
+        d = _lev(v, norm)
         if best is None or d < best:
             best = d
             if best == 0:
@@ -422,8 +436,11 @@ MAX_REGEN = 2      # 每个 voter 内数字字段溯源不通过的最大重生�
 AMOUNT_TOKEN_RE = r"\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"  # 带单位才算金额，排除年份/案号
 
 
-def _source_amount_values(text: str, window: int = 100) -> list[int]:
-    """原文诉讼请求区金额候选：各触发词后 window 字符内带单位的金额数值列表（应加算的部分）。"""
+@lru_cache(maxsize=8)
+def _source_amount_values(text: str, window: int = 100) -> tuple:
+    """原文诉讼请求区金额候选：各触发词后 window 字符内带单位的金额数值列表（应加算的部分）。
+    按原文缓存（provenance_fails/_regen_hint/restore_amount_precision 反复调用，全文只扫描一次）；
+    返回 tuple（不可变，防止缓存结果被调用方修改）。"""
     vals = []
     for trig in CLAIM_TRIGGERS:
         for m in re.finditer(re.escape(trig), text):
@@ -432,7 +449,7 @@ def _source_amount_values(text: str, window: int = 100) -> list[int]:
                 v = _parse_amount(am.group(0))
                 if v is not None and v > 0:
                     vals.append(v)
-    return vals
+    return tuple(vals)
 
 
 def _scale_to_int(vals, target):
@@ -486,9 +503,11 @@ TEXT_TOL = 0  # 文本字段溯源容差（NFKC + 去空白归一化后）
 DATE_FIELDS = ["应到时间", "立案日期", "举证期限"]  # 日期类字段：溯源额外支持年月日数字匹配
 
 
-def _digit_groups(s) -> list[str]:
-    """提取文本中的数字分组（去前导零），如 "2026-06-29 09:00" -> ["2026","6","29","9","0"]。"""
-    return [str(int(m)) for m in re.findall(r"\d+", str(s))]
+@lru_cache(maxsize=256)
+def _digit_groups(s) -> tuple:
+    """提取文本中的数字分组（去前导零），如 "2026-06-29 09:00" -> ("2026","6","29","9","0")。
+    按输入缓存（日期类字段溯源对全文与字段值重复计算时直接命中）。"""
+    return tuple(str(int(m)) for m in re.findall(r"\d+", str(s)))
 
 
 def _date_digits_match(value, text: str) -> bool:
@@ -511,10 +530,19 @@ _CJK_RAD_SUP = {
 }
 
 
+# 文本溯源归一化需去除的标点（保留小数点 .，全角 ． 经 NFKC 统一为半角 .）
+_PUNCT_RE = re.compile(r"[，。、；：？！（）《》〈〉「」『』“”‘’—…～·〔〕【】｛｝,;:!?()\[\]{}<>\"'`|/\\@#%&*+=^~_-]+")
+
+
+@lru_cache(maxsize=256)
 def _provenance_norm(s) -> str:
-    """归一化文本用于溯源比较：NFKC（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射 + 去空白。"""
+    """归一化文本用于溯源比较：NFKC（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射
+    + 去空白 + 去除标点（保留小数点 .）。
+    按输入缓存：全文归一化（约 50KB 的 NFKC + 正则）每份文书只算一次，
+    provenance_fails / _text_provenance_dist / _best_source_snippet 重复调用直接命中。"""
     t = unicodedata.normalize("NFKC", str(s))
     t = "".join(_CJK_RAD_SUP.get(ord(c), c) for c in t)
+    t = _PUNCT_RE.sub("", t)
     return re.sub(r"\s+", "", t)
 
 
@@ -662,6 +690,35 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
     return "；".join(parts)
 
 
+def _best_source_snippet(value, text: str, field: str, win: int = 16) -> tuple:
+    """溯源调试信息：字段值在原文中的 (编辑距离, 原文片段)。
+    - 优先定位原文中的原始值/归一化值，取 ±win 字符上下文
+    - 找不到时粗略扫描与值最相似的连续片段"""
+    s = str(value)
+    nt = _provenance_norm(text)
+    nv = _provenance_norm(s)
+    if field in NUMBER_FIELDS:
+        d = _best_token_dist(s if s else "", text)
+    else:
+        d = _min_substring_edit_dist(nv, nt) if nv else None
+    raw_idx = text.find(s) if s else -1
+    if raw_idx >= 0:
+        snip = text[max(0, raw_idx - win): raw_idx + len(s) + win]
+    elif nv and nv in nt:
+        i = nt.find(nv)
+        snip = nt[max(0, i - win): i + len(nv) + win]
+    else:
+        step = max(1, len(nt) // 300)
+        w = (len(nv) + 6) if nv else 1
+        best_i, best_d = 0, 10 ** 9
+        for i in range(0, max(1, len(nt) - w), step):
+            dd = _min_substring_edit_dist(nv, nt[i:i + w]) if nv else 0
+            if dd < best_d:
+                best_d, best_i = dd, i
+        snip = nt[best_i: best_i + w + win * 2]
+    return d, snip.replace("\n", "⏎")
+
+
 def extract_voter(skill_name: str, text: str) -> dict:
     """单个 voter：提取并做数字溯源兜底重生成，返回溯源合格的结果。"""
     cand, fails = None, []
@@ -678,7 +735,11 @@ def extract_voter(skill_name: str, text: str) -> dict:
         fails = provenance_fails(cand, text)
         if not fails:
             break
-        print(f"[voter] 字段溯源不通过 {str({f: cand.get(f) for f in fails})}，重生成 {attempt+1}/{MAX_REGEN+1}")
+        details = []
+        for f in fails:
+            d, snip = _best_source_snippet(cand.get(f), text, f)
+            details.append(f"{f}={cand.get(f)}（编辑距离 {d}，原文「{snip}」）")
+        print(f"[voter] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}")
     return cand
 
 
