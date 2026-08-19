@@ -23,10 +23,10 @@ PDF
                             │    每个 voter:                 │
                             │      agent(extract_prompt)     │
                             │      → align_to_ref(规整字段)  │
-                            │      → provenance_fails(全字段) │
-                            │         数字:编辑距离/子集和    │
-                            │         文本:归一化后子串编辑距离 │
-                            │      ──不通过──► 日志(编辑距离+ │
+                            │      → provenance_fails(布尔)  │
+                            │         数字:数值匹配/子集和   │
+                            │         文本:归一化后子串包含   │
+                            │      ──不通过──► 日志(命中+    │
                             │        原文片段) + 带还原值/提示 │
                             │        提示重生成(≤MAX_REGEN)  │
                             └───────────────┬───────────────┘
@@ -38,23 +38,21 @@ PDF
                                             │
                             ┌───────────────▼───────────────┐
                             │ ④ 输出包装                    │
-                            │    先溯源(编辑距离)            │
-                            │    再 normalize_value 归一化    │
+                            │    normalize_value 归一化      │
                             │    金额字段 restore_amount_    │
                             │      precision 还原全精度       │
                             │    置信度 = 众数/N × 100       │
                             └───────────────┬───────────────┘
                                             ▼
-              {字段: {value, 编辑距离, 置信度}, 提取说明, 文书类型}
+              {字段: {value, 置信度}, 提取说明, 文书类型}
 ```
 
 **关键数据流约定**
 - 源头（source）= `query1` = PDF 解析后的全文文本
-- 编辑距离 = 字段值（最终值）与原文最佳匹配的最小 Levenshtein 距离
 - 置信度 = N 次 vote 中众数出现次数 / N 的百分数
 - 数字字段 = `标的额` / `赔偿金` / `诉讼请求金额`（`NUMBER_FIELDS`）
 - 加算字段 = `诉讼请求金额`、`标的额`、`赔偿金`（输出可能是若干原文金额之和，用子集和验证）
-- 重生成由「字段溯源不通过」触发（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`）：数字字段走编辑距离/子集和，文本字段走归一化（NFKC+去空白+去标点，保留小数点）后子串编辑距离
+- 重生成由「字段溯源不通过」触发（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`）：数字字段走数值精确匹配/子集和，文本字段走归一化（NFKC+去空白+去标点，保留小数点）后子串包含判定
 
 ---
 
@@ -67,11 +65,9 @@ PDF
 | `TYPE_TO_SKILL` | 关键词 → skill 目录 映射 | 文书类型关键词匹配提取 skill |
 | `SKILL_FIELDS` | skill → 字段清单 | 各类型可提取字段 |
 | `NUMBER_FIELDS` | `["标的额","赔偿金","诉讼请求金额"]` | 数字字段（溯源/归一化/还原） |
-| `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型","标准案由"]` | 不做溯源的字段（编辑距离为 None） |
+| `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型","标准案由"]` | 不做溯源的字段（视为通过） |
 | `SUMMED_FIELDS` | `["诉讼请求金额","标的额","赔偿金"]` | 可能由原文若干金额加算的字段 |
 | `CLAIM_TRIGGERS` | 诉讼请求区/标的额/赔偿金/裁判区触发词 | 定位原文金额候选的窗口锚点（与各 skill 字段触发词对齐：`诉讼请求`…、`标的额/标的金额/涉案金额/争议金额`、`赔偿金/赔偿款/损害赔偿/赔偿金额`、`裁判`） |
-| `NUM_TOL` | `0` | 单值编辑距离容差（数字字段） |
-| `TEXT_TOL` | `0` | 文本字段溯源容差（NFKC + 去空白 + 去标点（保留小数点 `.`）后） |
 | `DATE_FIELDS` | `["应到时间","立案日期","举证期限"]` | 日期类字段：溯源额外支持年月日数字分组匹配 |
 | `AMOUNT_TOL` | `0.0051` | 金额舍入容差(元)：仅供还原用，溯源判定不用 |
 | `MAX_REGEN` | `2` | 每个 voter 内字段溯源不通过的最大重生成次数 |
@@ -104,28 +100,16 @@ PDF
 - **`majority_vote(results) -> (dict, dict)`**
   对多次生成结果逐字段取众数（按 JSON 序列化比较，支持 list/dict 值，平局保留最先出现）。返回 `(众数结果, 每字段众数出现次数)`。
 
-### 3.2 全字段溯源（编辑距离）
-
-- **`_normalize_number(s) -> str`**
-  归一化数字写法：去空白、千分位逗号/顿号、`元/人民币/万元/亿` 等后缀、全角转半角，便于数字比较。
+### 3.2 全字段溯源（布尔判定）
 
 - **`_text_number_tokens(text) -> tuple`**（`@lru_cache`）
-  原文中的数字 token 列表（含预解析结果），按原文缓存供 `_best_token_dist` 复用：每项为 `(原始串, 数值, 归一化串)`，避免重复全文扫描与逐 token 解析。全文只扫描一次。
+  原文中的数字 token 数值列表（含 `万元/亿元` 等单位换算），按原文缓存供 `_amount_token_match` 复用，避免重复全文扫描与逐 token 解析。全文只扫描一次。
 
-- **`_lev(a, b) -> int`**
-  两字符串的 Levenshtein 编辑距离（滚动数组 DP），供 `_best_token_dist` 复用。
+- **`_amount_token_match(target, text) -> bool`**
+  目标金额是否与原文某个数字 token **数值相等**（含 `万元/亿元` 换算，如 `80000` 可匹配 `8万元`）。
 
-- **`_best_token_dist(value, text) -> int | None`**
-  归一化后的数字串与原文中**每个数字 token** 的最小 Levenshtein 距离；原文无 token 返回 `None`。token 列表经 `_text_number_tokens` 按原文缓存；带 `万元/亿元` 等单位的 token 先按数值比较（如 `8万元` 可匹配 `80000`）。
-
-- **`_min_substring_edit_dist(value, text) -> int`**
-  文本值与原文**任意连续子串**的最小编辑距离（子串首尾可自由裁剪）；先做逐字命中快速路径，未命中再跑 DP。
-
-- **`_edit_dist_for(value, text) -> int | None`**
-  单个字段值的溯源距离：数字走 `_best_token_dist`（保留小数不截断），列表取各元素距离最大值（最差项），文本走子串编辑距离；null/空值 → `None`（不做溯源）。
-
-- **`field_provenance(extracted, text) -> dict`**
-  全字段溯源，返回 `{字段: 编辑距离}`；`SKIP_PROVENANCE_FIELDS` 中的字段固定 `None`。
+- **`_text_provenance_ok(value, text, field) -> bool`**
+  文本字段溯源布尔判定：列表须**全部**命中；归一化后是原文子串 → `True`；日期类字段额外支持年月日数字分组匹配；null/空/无法归一化 → `True`（跳过）。
 
 ### 3.3 金额解析与归一化
 
@@ -133,7 +117,10 @@ PDF
   金额串 → 数值（元）：`万元 ×10000`、`亿元 ×1亿`、去千分位/单位/全角数字；**带小数返回 float 全精度，整数金额返回 int**；无法解析返回 `None`。
 
 - **`normalize_value(value, field)`**
-  字段值归一化（在溯源之后执行）：`NUMBER_FIELDS` 统一转数值(元)，复用 `_parse_amount`；递归处理 dict/list；非数字字段原样返回。
+  字段值归一化：`NUMBER_FIELDS` 统一转数值(元)，复用 `_parse_amount`；递归处理 dict/list；非数字字段原样返回。
+
+- **数字字段溯源先归一化再比对**
+  数字字段（`NUMBER_FIELDS`）溯源判定前，先把提取值与原文金额候选各自经 `_parse_amount` 归一化为数值(元)，再做**严格数值相等**比较（含 `万元/亿元` 换算：`80000` 可匹配 `8万元`，反之 `8` 不能匹配 `8万元`）。无字符串归一化兜底路径。
 
 ### 3.4 数字字段溯源兜底重生成
 
@@ -148,8 +135,8 @@ PDF
 
 - **`provenance_fails(cand, text) -> list[str]`**
   全字段溯源复合判定（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`），返回未通过字段列表：
-  - **数字字段**：单值编辑距离 ≤ `NUM_TOL` → 通过；字段 ∈ `SUMMED_FIELDS` 且值 = 原文金额候选的**精确**子集和 → 通过；其余判不通过（触发重生成）。
-  - **文本字段**：`NFKC`（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射 + **去空白 + 去除标点（保留小数点 `.`）**后，与原文任意子串的编辑距离 ≤ `TEXT_TOL` → 通过；日期类字段（`应到时间`/`立案日期`/`举证期限`）支持年月日数字分组匹配。
+  - **数字字段**：数值与原文某数字 token **精确相等**（含 `万元/亿元` 换算）→ 通过；字段 ∈ `SUMMED_FIELDS` 且值 = 原文金额候选的**精确**子集和 → 通过；其余判不通过（触发重生成）。
+  - **文本字段**：`NFKC`（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射 + **去空白 + 去除标点（保留小数点 `.`）**后，为原文子串 → 通过；日期类字段（`应到时间`/`立案日期`/`举证期限`）支持年月日数字分组匹配。
   - null/空/无法解析的值跳过（视为通过）。
 
 - **`_subset_sum_value(vals, target, tol, max_terms=12) -> int | None`**
@@ -161,8 +148,8 @@ PDF
   2. 加算命中：`SUMMED_FIELDS` 中存在子集和与目标在容差内 → 用该精确和；
   无对应原文金额时原样返回。
 
-- **`_best_source_snippet(value, text, field, win=16) -> (int, str)`**
-  溯源调试信息：返回字段值在原文中的 `(编辑距离, 原文片段)`。优先定位原文中的原始值/归一化值并截取 ±win 字符上下文；找不到时粗略扫描与值最相似的连续片段。用于 voter 溯源失败日志。
+- **`_best_source_snippet(value, text, field, win=16) -> (bool, str)`**
+  溯源调试信息：返回字段值在原文中的 `(是否命中, 原文片段)`。优先定位原文中的原始值/归一化值并截取 ±win 字符上下文；找不到时返回 `(False, 原文片段)`。用于 voter 溯源失败日志。
 
 - **`_regen_hint(fails, cand, text) -> str`**
   为重生成拼接溯源提示：**数字字段**逐字段列出「提取值无法由原文金额验证」、`restore_amount_precision` 还原出的**最接近原文金额**（请模型按此输出）、以及 `_source_amount_values` 返回的**多段原文金额候选及上下文**（`[金额]「原文片段」`，请模型逐段复核后提取；如需加算请按各项之和）；**文本字段**提示「提取值未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充」。
@@ -177,10 +164,10 @@ PDF
 
 - **主流程（voter 循环 + 输出包装）**
   1. 判型；`skill_for_doc_type` 命中且需解析时进入提取；
-  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段）；不通过则打印溯源日志（字段值 + 编辑距离 + 原文片段，见 `_best_source_snippet`）并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
+  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段布尔）；不通过则打印溯源日志（字段值 + 是否命中 + 原文片段，见 `_best_source_snippet`）并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
   3. `majority_vote` 取众数；
-  4. `field_provenance` 先对原始输出溯源，再 `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度，金额字段的 `编辑距离` 按还原后的值重算；
-  5. 输出 `{字段: {value, 编辑距离, 置信度}, 提取说明, 文书类型}`。
+  4. `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度；
+  5. 输出 `{字段: {value, 置信度}, 提取说明, 文书类型}`。
 
 ---
 
@@ -216,6 +203,7 @@ PDF
 
 - 模型输出金额必须**保留原文全部小数位**：skill 侧硬性约束禁止四舍五入/截取小数（见 `prompts/skills/*/SKILL.md` 与各 `.修改记录.md`）。
 - 溯源判定**不设金额容差**：`832552.67`（≠ 原文 `832552.665`）会判不通过并触发重生成。
+- 数字字段溯源**先归一化再比对**：提取值与原文金额候选各自经 `_parse_amount` 归一化为数值(元)后做严格相等比较，仅数值相等通过（含 `万元/亿元` 换算）。
 - 重生成提示携带 `restore_amount_precision` 还原出的最接近原文金额，引导模型按全精度输出。
 - 最终输出**仍由 `restore_amount_precision` 兜底还原**，保证 value 小数位与原文一致。
 
@@ -229,7 +217,7 @@ PDF
 |---|---|---|---|
 | `_provenance_norm` | 输入字符串 | 60~240 次全文 NFKC+去标点 | 1 次（命中率 >95%） |
 | `_source_amount_values` | 原文 | 60~220 次全文正则扫描 | 1 次（含多段原文片段） |
-| `_text_number_tokens` | 原文 | `_best_token_dist` 每次重复全文扫描+逐 token 解析 | 1 次 |
+| `_text_number_tokens` | 原文 | `_amount_token_match` 每次重复全文扫描+逐 token 解析 | 1 次 |
 | `_digit_groups` | 输入字符串 | 日期溯源每次全文 `\d+` 扫描 | 1 次 |
 | `_ref_fields` | skill 名 | 60 次读 `ref.json`+JSON 解析 | 每 skill 1 次 |
 

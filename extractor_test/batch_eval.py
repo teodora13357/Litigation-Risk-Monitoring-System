@@ -109,15 +109,15 @@ def load_gt(path: Path) -> dict:
 
 
 def _unwrap_value(v):
-    """结果字段可能是 {value, 编辑距离, 置信度} 包装，取其中的 value；否则原样返回。"""
-    if isinstance(v, dict) and "value" in v and "编辑距离" in v:
+    """结果字段可能是 {value, 置信度} 包装，取其中的 value；否则原样返回。"""
+    if isinstance(v, dict) and "value" in v and "置信度" in v:
         return v["value"]
     return v
 
 
 def _unwrap_confidence(v):
-    """结果字段 {value, 编辑距离, 置信度} 中的置信度（0-100）；无则 None。"""
-    if isinstance(v, dict) and "value" in v and "编辑距离" in v:
+    """结果字段 {value, 置信度} 中的置信度（0-100）；无则 None。"""
+    if isinstance(v, dict) and "value" in v and "置信度" in v:
         c = v.get("置信度")
         return c if isinstance(c, (int, float)) else None
     return None

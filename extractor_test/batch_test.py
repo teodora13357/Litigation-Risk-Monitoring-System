@@ -217,144 +217,29 @@ def invoke_classify(classify_agent_, md_content: str) -> dict:
 
 
 # ============================================================
-# 溯源：全字段编辑距离（源头=文书原文，输出=字段值）
+# 溯源：全字段布尔判定（源头=文书原文，输出=字段值）
 # ============================================================
 NUMBER_FIELDS = ["标的额", "赔偿金", "诉讼请求金额"]
-SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型", "标准案由"]  # 这些字段不做溯源（编辑距离固定为 None）
-
-
-def _normalize_number(s: str) -> str:
-    """归一化数字写法：去空白、千分位逗号/顿号、人民币/元等后缀、全角转半角。"""
-    if s is None:
-        return ""
-    t = str(s)
-    t = t.replace("，", "").replace(",", "").replace(" ", "").replace("　", "")
-    # 全角数字/字母转半角
-    t = "".join(chr(ord(ch) - 0xFEE0) if "０" <= ch <= "９" else ch for ch in t)
-    # 去掉 元/人民币/万元/亿 等单位词（匹配数字主体）
-    for unit in ["万元", "亿元", "元", "人民币", "￥", "¥", "约", "共", "整"]:
-        t = t.replace(unit, "")
-    return t.strip()
+SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型", "标准案由"]  # 这些字段不做溯源（视为通过）
 
 
 @lru_cache(maxsize=8)
 def _text_number_tokens(text: str) -> tuple:
-    """原文中的数字 token 列表（含预解析结果），按原文缓存供 _best_token_dist 复用，避免重复全文扫描。
-    每项为 (原始串, 数值, 归一化串)：数值供万元/亿元等带单位 token 的数值比较，归一化串供编辑距离。"""
+    """原文中的数字 token 数值列表（含 万元/亿元 等单位换算），按原文缓存供数字字段溯源复用。
+    全文只扫描一次。"""
     out = []
     for m in re.finditer(r"[\d，,．.][\d，,．.]*(?:\s*(?:万元|亿元|元|人民币|￥|¥))?", text):
-        raw = m.group(0)
-        out.append((raw, _parse_amount(raw), _normalize_number(raw)))
+        v = _parse_amount(m.group(0))
+        if v is not None:
+            out.append(v)
     return tuple(out)
 
 
-def _lev(a: str, b: str) -> int:
-    """两字符串的 Levenshtein 编辑距离（滚动数组 DP）。"""
-    if a == b:
-        return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
-        prev = cur
-    return prev[-1]
-
-
-def _best_token_dist(value: str, text: str) -> int | None:
-    """value(归一化数字串) 与 text 中各数字 token 的最小编辑距离；无 token 返回 None。
-    token 列表按原文缓存（_text_number_tokens），重复调用只做距离计算。"""
-    v = _normalize_number(value)
-    if not v:
-        return None
-    try:
-        v_num = float(v)
-    except ValueError:
-        v_num = None
-    best = None
-    # 数字 token：允许千分位逗号、小数、前后可带 元/人民币 等单位
-    for raw, parsed, norm in _text_number_tokens(text):
-        # 带 万元/亿元 等单位的 token 先按数值比较（如 "8万元" 可匹配 80000）
-        if v_num is not None and parsed is not None and parsed == v_num:
-            return 0
-        if not norm:
-            continue
-        d = _lev(v, norm)
-        if best is None or d < best:
-            best = d
-            if best == 0:
-                return 0
-    return best
-
-
-def _min_substring_edit_dist(value: str, text: str) -> int:
-    """value 与 text 任意连续子串的最小编辑距离（子串首尾可自由裁剪）。
-    先做逐字命中快速路径，未命中再跑 O(len(value)*len(text)) 的 DP。"""
-    if not value:
-        return 0
-    if not text:
-        return len(value)
-    if value in text:
-        return 0
-    # dp 第 0 行全 0：子串可从任意位置开始，前置字符免费跳过
-    prev = [0] * (len(text) + 1)
-    for ca in value:
-        cur = [prev[0] + 1]
-        for j, cb in enumerate(text, 1):
-            cur.append(min(
-                prev[j] + 1,
-                cur[j - 1] + 1,
-                prev[j - 1] + (ca != cb),
-            ))
-        prev = cur
-    return min(prev)
-
-
-def _edit_dist_for(value, text: str) -> int | None:
-    """单个字段值在原文(源头)中的最小编辑距离；null/空值 → None（不做溯源）。
-    - 数字：与原文数字 token 比较（归一化后）
-    - 列表：取各元素编辑距离的最大值（最差项）
-    - 文本：与原文任意连续子串的最小编辑距离"""
-    if isinstance(value, dict):
-        if "value" not in value:
-            return None  # 非 {value:...} 结构（如提取说明），不做溯源
-        value = value["value"]
-    if value is None or value == "":
-        return None
-    if isinstance(value, (list, tuple)):
-        ds = [_edit_dist_for(v, text) for v in value]
-        ds = [d for d in ds if d is not None]
-        return max(ds) if ds else 0
-    if isinstance(value, int):
-        value = str(value)
-    elif isinstance(value, float):
-        value = str(int(value)) if value.is_integer() else str(value)  # 保留小数
-    s = str(value).strip()
-    if not s:
-        return None
-    if s in text:  # 原文逐字包含 → 编辑距离 0
-        return 0
-    if s.replace(".", "", 1).isdigit():  # 数字字段：与原文数字 token 比较
-        d = _best_token_dist(s, text)
-        if d is not None:
-            return d
-    return _min_substring_edit_dist(s, text)
-
-
-def field_provenance(extracted: dict, text: str) -> dict:
-    """全字段溯源：返回 {字段: 编辑距离}。编辑距离 = 字段输出值与其在原文(源头)中最佳匹配的编辑距离。
-    SKIP_PROVENANCE_FIELDS 中的字段不做溯源。"""
-    out = {}
-    for f, v in extracted.items():
-        if f in SKIP_PROVENANCE_FIELDS:
-            out[f] = None  # 不做溯源
-            continue
-        out[f] = _edit_dist_for(v, text)
-    return out
+def _amount_token_match(target, text: str) -> bool:
+    """目标金额是否与原文某个数字 token 数值相等（含 万元/亿元 换算，如 80000 可匹配 "8万元"）。"""
+    if target is None:
+        return False
+    return any(parsed == target for parsed in _text_number_tokens(text))
 
 
 def _parse_amount(s):
@@ -380,7 +265,7 @@ def _parse_amount(s):
 
 
 def normalize_value(value, field: str):
-    """字段值归一化（在溯源之后执行）：number 字段统一转为数值(元)，复用 _parse_amount；
+    """字段值归一化：number 字段统一转为数值(元)，复用 _parse_amount；
     非 number 字段原样返回。"""
     if field not in NUMBER_FIELDS:
         return value
@@ -406,9 +291,8 @@ SUMMED_FIELDS = ["诉讼请求金额", "标的额", "赔偿金"]   # 可能由�
 CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿", "诉请", "判令", "裁判",
                   "标的额", "标的金额", "涉案金额", "争议金额",
                   "赔偿金", "赔偿款", "损害赔偿", "赔偿金额"]
-NUM_TOL = 0        # 单值编辑距离容差
 AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度（如 832552.67 → 832552.665）；溯源判定不使用容差
-MAX_REGEN = 2      # 每个 voter 内数字字段溯源不通过的最大重生成次数
+MAX_REGEN = 2      # 每个 voter 内字段溯源不通过的最大重生成次数
 AMOUNT_TOKEN_RE = r"\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"  # 带单位才算金额，排除年份/案号
 
 
@@ -484,7 +368,6 @@ def _subset_sum_possible(vals, target, tol, max_terms: int = 12) -> bool:
     return dfs(0, target, 0)
 
 
-TEXT_TOL = 0  # 文本字段溯源容差（NFKC + 去空白归一化后）
 DATE_FIELDS = ["应到时间", "立案日期", "举证期限"]  # 日期类字段：溯源额外支持年月日数字匹配
 
 
@@ -524,45 +407,43 @@ def _provenance_norm(s) -> str:
     """归一化文本用于溯源比较：NFKC（全角转半角、CJK 兼容字/部首统一到汉字）+ 部首补充块映射
     + 去空白 + 去除标点（保留小数点 .）。
     按输入缓存：全文归一化（约 50KB 的 NFKC + 正则）每份文书只算一次，
-    provenance_fails / _text_provenance_dist / _best_source_snippet 重复调用直接命中。"""
+    provenance_fails / _text_provenance_ok 重复调用直接命中。"""
     t = unicodedata.normalize("NFKC", str(s))
     t = "".join(_CJK_RAD_SUP.get(ord(c), c) for c in t)
     t = _PUNCT_RE.sub("", t)
     return re.sub(r"\s+", "", t)
 
 
-def _text_provenance_dist(value, text: str, field: str, nt: str | None = None) -> int | None:
-    """文本字段溯源距离：列表取最差项；归一化后与原文任意子串的编辑距离；
-    日期类字段先做年月日数字匹配（命中返回 0）。"""
+def _text_provenance_ok(value, text: str, field: str, nt: str | None = None) -> bool:
+    """文本字段溯源布尔判定：列表须全部命中；归一化后是原文子串 → True；
+    日期类字段额外支持年月日数字匹配。null/空/无法归一化 → True（跳过）。"""
     if isinstance(value, dict):
         if "value" not in value:
-            return None
+            return True
         value = value["value"]
     if value is None or value == "":
-        return None
+        return True
     if isinstance(value, (list, tuple)):
-        ds = [_text_provenance_dist(v, text, field, nt) for v in value]
-        ds = [d for d in ds if d is not None]
-        return max(ds) if ds else 0
+        return all(_text_provenance_ok(v, text, field, nt) for v in value)
     s = str(value).strip()
     if not s:
-        return None
+        return True
     nv = _provenance_norm(s)
     if not nv:
-        return None
+        return True
     if nt is None:
         nt = _provenance_norm(text)
     if nv in nt:
-        return 0
+        return True
     if field in DATE_FIELDS and _date_digits_match(s, text):
-        return 0
-    return _min_substring_edit_dist(nv, nt)
+        return True
+    return False
 
 
 def provenance_fails(cand: dict, text: str) -> list[str]:
     """全字段溯源复合判定（除 SKIP_PROVENANCE_FIELDS 与 提取说明），返回未通过、需重生成的字段列表：
-    - 数字字段：单值编辑距离 <= NUM_TOL；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
-    - 文本字段：NFKC+去空白归一化后子串编辑距离 <= TEXT_TOL（日期类字段支持年月日数字匹配）
+    - 数字字段：数值与原文某数字 token 精确相等（含 万元/亿元 换算）；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
+    - 文本字段：NFKC+去空白归一化后为原文子串（日期类字段支持年月日数字匹配）
     - null/空/无法解析的值跳过（视为通过）"""
     claim_vals = [v for v, _ in _source_amount_values(text)]
     nt = _provenance_norm(text)
@@ -580,9 +461,8 @@ def provenance_fails(cand: dict, text: str) -> list[str]:
                 if parsed is None:
                     continue
                 target = parsed
-            # 1) 单值编辑距离
-            d = _best_token_dist(str(target), text)
-            if d is not None and d <= NUM_TOL:
+            # 1) 单值精确匹配（数值相等，含 万元/亿元 换算）
+            if _amount_token_match(target, text):
                 continue
             # 2) 加算：子集和（按最大小数位缩放为整数，保留全部小数精确比较）
             if f in SUMMED_FIELDS:
@@ -591,8 +471,7 @@ def provenance_fails(cand: dict, text: str) -> list[str]:
                     continue
             fails.append(f)
             continue
-        d = _text_provenance_dist(v, text, f, nt)
-        if d is not None and d > TEXT_TOL:
+        if not _text_provenance_ok(v, text, f, nt):
             fails.append(f)
     return fails
 
@@ -678,16 +557,16 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
 
 
 def _best_source_snippet(value, text: str, field: str, win: int = 16) -> tuple:
-    """溯源调试信息：字段值在原文中的 (编辑距离, 原文片段)。
+    """溯源调试信息：字段值在原文中的 (是否命中, 原文片段)。
     - 优先定位原文中的原始值/归一化值，取 ±win 字符上下文
-    - 找不到时粗略扫描与值最相似的连续片段"""
+    - 找不到时返回 (False, 原文片段)"""
     s = str(value)
     nt = _provenance_norm(text)
     nv = _provenance_norm(s)
     if field in NUMBER_FIELDS:
-        d = _best_token_dist(s if s else "", text)
+        hit = _amount_token_match(_parse_amount(s) if s else None, text)
     else:
-        d = _min_substring_edit_dist(nv, nt) if nv else None
+        hit = bool(nv) and nv in nt
     raw_idx = text.find(s) if s else -1
     if raw_idx >= 0:
         snip = text[max(0, raw_idx - win): raw_idx + len(s) + win]
@@ -695,15 +574,9 @@ def _best_source_snippet(value, text: str, field: str, win: int = 16) -> tuple:
         i = nt.find(nv)
         snip = nt[max(0, i - win): i + len(nv) + win]
     else:
-        step = max(1, len(nt) // 300)
-        w = (len(nv) + 6) if nv else 1
-        best_i, best_d = 0, 10 ** 9
-        for i in range(0, max(1, len(nt) - w), step):
-            dd = _min_substring_edit_dist(nv, nt[i:i + w]) if nv else 0
-            if dd < best_d:
-                best_d, best_i = dd, i
-        snip = nt[best_i: best_i + w + win * 2]
-    return d, snip.replace("\n", "⏎")
+        i = nt.find(nv[:1]) if nv else -1
+        snip = nt[max(0, i - win): i + win * 2] if i >= 0 else nt[:win * 2]
+    return hit, snip.replace("\n", "⏎")
 
 
 def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
@@ -715,7 +588,7 @@ def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
 
 
 def extract_voter(extract_agent_, skill_name: str, text: str) -> dict:
-    """单个 voter：提取并做全字段溯源兜底重生成（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。"""
+    """单个 voter：提取并做全字段溯源布尔判定（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。"""
     cand, fails = None, []
     for attempt in range(MAX_REGEN + 1):
         msgs = [("user", text)]
@@ -727,26 +600,24 @@ def extract_voter(extract_agent_, skill_name: str, text: str) -> dict:
             break
         details = []
         for f in fails:
-            d, snip = _best_source_snippet(cand.get(f), text, f)
-            details.append(f"{f}={cand.get(f)}（编辑距离 {d}，原文「{snip}」）")
+            hit, snip = _best_source_snippet(cand.get(f), text, f)
+            details.append(f"{f}={cand.get(f)}（命中 {hit}，原文「{snip}」）")
         print(f"[voter] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
     return cand
 
 
 def wrap_extracted(extracted: dict, counts: dict, text: str, doc_type: str, total_votes: int) -> dict:
-    """最终输出包装：先用原始输出值溯源（编辑距离），再归一化 value；置信度 = 众数/20 的百分数。"""
-    provenance = field_provenance(extracted, text)
+    """最终输出包装：归一化 value（金额字段还原原文全精度）；置信度 = 众数/20 的百分数。"""
     final = {}
     for f, v in extracted.items():
         if f == "提取说明":
             final[f] = v   # 说明字段原样保留，不包属性
             continue
-        value = normalize_value(v, f)                       # 溯源之后再归一化 value
+        value = normalize_value(v, f)                       # 归一化 value
         if f in NUMBER_FIELDS:
             value = restore_amount_precision(value, text, f)  # 金额字段还原为原文全精度（防四舍五入）
         final[f] = {
             "value": value,
-            "编辑距离": _edit_dist_for(value, text) if f in NUMBER_FIELDS else provenance.get(f),
             "置信度": round(counts.get(f, 0) / total_votes * 100),  # 众数/20 的百分数
         }
     final.setdefault("文书类型", doc_type)
@@ -787,7 +658,7 @@ NUM_VOTES = 20  # 与 parse_doc.py 对齐：每篇文书投票数
 
 
 def process_document(classify_agent_, md_content: str, num_votes: int = NUM_VOTES) -> dict:
-    """先分类，再按类型加载对应 skill 提取（每 voter 数字溯源兜底重生成，投票后每字段包装 value/编辑距离/置信度）。"""
+    """先分类，再按类型加载对应 skill 提取（每 voter 字段溯源布尔判定兜底重生成，投票后每字段包装 value/置信度）。"""
     cls = invoke_classify(classify_agent_, md_content)
     doc_type = cls.get("文书类型") or ""
     need_parse = str(cls.get("是否需解析") or "").strip()
