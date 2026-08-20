@@ -250,12 +250,78 @@ NUMBER_FIELDS = ["标的额", "赔偿金", "诉讼请求金额"]
 SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型", "标准案由"]  # 这些字段不做溯源（视为通过）
 
 
+# 汉字数字/单位映射（含大写），用于把原文汉字金额归一化为数字
+_CN_DIGITS = {
+    "零": 0, "〇": 0, "○": 0,
+    "一": 1, "壹": 1, "二": 2, "贰": 2, "两": 2, "三": 3, "叁": 3,
+    "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陆": 6, "七": 7,
+    "柒": 7, "八": 8, "捌": 8, "九": 9, "玖": 9,
+}
+_CN_UNITS = {
+    "十": 10, "拾": 10, "百": 100, "佰": 100, "千": 1000, "仟": 1000,
+}
+_CN_BIG_UNITS = {"万": 10000, "萬": 10000, "亿": 100000000, "億": 100000000}
+_CN_SCALE_CHARS = "十百千万亿拾佰仟萬億"
+
+
+def _cn_amount(s: str):
+    """汉字金额串 → 数值（如 二千→2000、贰仟元→2000、两万→20000、一万零三百→10300、十万→100000）。
+    仅当串含数量级单位（十/百/千/万/亿）或带 元/人民币/整 后缀时才判定为金额，避免误识别日期等；
+    解析失败返回 None。"""
+    t = (s or "").strip()
+    if not t:
+        return None
+    had_unit_suffix = False
+    if t.startswith("人民币"):
+        t = t[len("人民币"):].strip()
+    changed = True
+    while changed and t:
+        changed = False
+        for suf in ["元", "人民币", "整"]:
+            if t.endswith(suf):
+                had_unit_suffix = True
+                t = t[: -len(suf)].strip()
+                changed = True
+    if not t:
+        return None
+    if not any(c in _CN_SCALE_CHARS for c in t) and not had_unit_suffix:
+        return None
+    total = 0
+    section = 0
+    number = 0
+    for ch in t:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            if number == 0:
+                number = 1  # 十/百/千 前无数时按 1（如 十五、十万）
+            section += number * _CN_UNITS[ch]
+            number = 0
+        elif ch in _CN_BIG_UNITS:
+            section = (section + number) * _CN_BIG_UNITS[ch]
+            total += section
+            section = 0
+            number = 0
+        else:
+            return None
+    total += section + number
+    return total if total > 0 else None
+
+
+# 汉字金额 token 正则（原文扫描用）：中文数字串 + 可选 元/人民币/整 后缀
+_CN_AMOUNT_RE = re.compile(r"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]+(?:\s*(?:元|人民币|整))?")
+
+
 @lru_cache(maxsize=8)
 def _text_number_tokens(text: str) -> tuple:
-    """原文中的数字 token 数值列表（含 万元/亿元 等单位换算），按原文缓存供数字字段溯源复用。
+    """原文中的金额 token 数值列表（含 万元/亿元 等单位换算 + 汉字金额归一化），按原文缓存供数字字段溯源复用。
     全文只扫描一次。"""
     out = []
     for m in re.finditer(r"[\d，,．.][\d，,．.]*(?:\s*(?:万元|亿元|元|人民币|￥|¥))?", text):
+        v = _parse_amount(m.group(0))
+        if v is not None:
+            out.append(v)
+    for m in _CN_AMOUNT_RE.finditer(text):
         v = _parse_amount(m.group(0))
         if v is not None:
             out.append(v)
@@ -263,19 +329,25 @@ def _text_number_tokens(text: str) -> tuple:
 
 
 def _amount_token_match(target, text: str) -> bool:
-    """目标金额是否与原文某个数字 token 数值相等（含 万元/亿元 换算，如 80000 可匹配 "8万元"）。"""
+    """目标金额是否与原文某个数字 token 数值相等（含 万元/亿元 换算、汉字金额归一化，如 80000 可匹配 "8万元"、2000 可匹配 "二千"）。"""
     if target is None:
         return False
     return any(parsed == target for parsed in _text_number_tokens(text))
 
 
 def _parse_amount(s):
-    """金额串 → 数值(元)：万元×10000、亿元×1亿、去千分位/单位/全角数字；保留小数（整数金额返回 int）。"""
+    """金额串 → 数值(元)：汉字金额（二千/贰仟/两万/一万零三百）先归一化为数字；
+    阿拉伯数字支持 万元×10000、亿元×1亿、去千分位/单位/全角数字；保留小数（整数金额返回 int）。"""
     if s is None:
         return None
     t = str(s).replace("，", ",").replace(" ", "").replace("　", "")
     # 全角数字/字母转半角
     t = "".join(chr(ord(ch) - 0xFEE0) if "０" <= ch <= "９" else ch for ch in t)
+    # 汉字金额：交给 _cn_amount（内部处理 元/人民币/整 后缀与 万/亿 单位）；解析失败则回落阿拉伯路径
+    if re.search(r"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]", t):
+        cn = _cn_amount(t)
+        if cn is not None:
+            return cn
     mult = 1
     if t.endswith("亿元"):
         mult = 100000000
@@ -336,6 +408,15 @@ def _source_amount_values(text: str, window: int = 100) -> tuple:
             base = m.end()
             seg = text[base: base + window]
             for am in re.finditer(AMOUNT_TOKEN_RE, seg):
+                v = _parse_amount(am.group(0))
+                if v is None or v <= 0 or v in seen:
+                    continue
+                seen.add(v)
+                abs_start = base + am.start()
+                abs_end = base + am.end()
+                ctx = text[max(0, abs_start - 45): abs_end + 15]
+                vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
+            for am in _CN_AMOUNT_RE.finditer(seg):
                 v = _parse_amount(am.group(0))
                 if v is None or v <= 0 or v in seen:
                     continue
