@@ -235,29 +235,52 @@ _CN_UNITS = {
 }
 _CN_BIG_UNITS = {"万": 10000, "萬": 10000, "亿": 100000000, "億": 100000000}
 _CN_SCALE_CHARS = "十百千万亿拾佰仟萬億"
+_CN_FRAC_DIGITS = "零〇○一二两三四五六七八九壹贰叁肆伍陆柒捌玖"
 
 
 def _cn_amount(s: str):
-    """汉字金额串 → 数值（如 二千→2000、贰仟元→2000、两万→20000、一万零三百→10300、十万→100000）。
-    仅当串含数量级单位（十/百/千/万/亿）或带 元/人民币/整 后缀时才判定为金额，避免误识别日期等；
+    """汉字金额串 → 数值（如 二千→2000、贰仟元→2000、两万→20000、一万零三百→10300、十万→100000；
+    壹仟贰佰叁拾肆元伍角陆分→1234.56、伍角→0.5、三分→0.03）。
+    仅当串含数量级单位（十/百/千/万/亿）或带 元/人民币/整/角/分 标记时才判定为金额，避免误识别日期等；
     解析失败返回 None。"""
     t = (s or "").strip()
     if not t:
         return None
-    had_unit_suffix = False
+    had_money_marker = False
     if t.startswith("人民币"):
+        had_money_marker = True
         t = t[len("人民币"):].strip()
+    # 先剥离尾部 分/角/元/人民币/整，并累加 角/分 小数
+    frac = 0.0
     changed = True
     while changed and t:
         changed = False
-        for suf in ["元", "人民币", "整"]:
-            if t.endswith(suf):
-                had_unit_suffix = True
-                t = t[: -len(suf)].strip()
-                changed = True
+        if t.endswith("分"):
+            m = re.search(rf"([{_CN_FRAC_DIGITS}])分$", t)
+            if not m:
+                return None
+            frac += _CN_DIGITS[m.group(1)] * 0.01
+            t = t[: m.start()].strip()
+            had_money_marker = True
+            changed = True
+        elif t.endswith("角"):
+            m = re.search(rf"([{_CN_FRAC_DIGITS}])角$", t)
+            if not m:
+                return None
+            frac += _CN_DIGITS[m.group(1)] * 0.1
+            t = t[: m.start()].strip()
+            had_money_marker = True
+            changed = True
+        else:
+            for suf in ("元", "人民币", "整"):
+                if t.endswith(suf):
+                    t = t[: -len(suf)].strip()
+                    had_money_marker = True
+                    changed = True
+                    break
     if not t:
-        return None
-    if not any(c in _CN_SCALE_CHARS for c in t) and not had_unit_suffix:
+        return _money_result(0, frac) if frac > 0 else None
+    if not any(c in _CN_SCALE_CHARS for c in t) and not had_money_marker:
         return None
     total = 0
     section = 0
@@ -278,31 +301,57 @@ def _cn_amount(s: str):
         else:
             return None
     total += section + number
-    return total if total > 0 else None
+    if total <= 0 and frac <= 0:
+        return None
+    return _money_result(total, frac)
 
 
-# 汉字金额 token 正则（原文扫描用）：中文数字串 + 可选 元/人民币/整 后缀
-_CN_AMOUNT_RE = re.compile(r"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]+(?:\s*(?:元|人民币|整))?")
+def _money_result(total: float, frac: float):
+    """整数元部分 + 角/分小数合并为数值；整数金额返回 int，带小数返回 float。"""
+    val = total + round(frac, 2)
+    return int(val) if val == int(val) else val
+
+
+# 汉字金额 token 正则（原文扫描用）：中文数字串 + 可选 元/人民币/整 + 可选 角/分 小数
+_CN_AMOUNT_RE = re.compile(
+    rf"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]+"
+    rf"(?:\s*(?:元|人民币|整))?"
+    rf"(?:[{_CN_FRAC_DIGITS}]+\s*角)?"
+    rf"(?:[{_CN_FRAC_DIGITS}]+\s*分)?"
+)
+
+
+def _has_money_marker(s: str) -> bool:
+    """金额标记（元/人民币/整/角/分）：原文扫描时排除日期、法条、期限等非金额汉字数字。"""
+    return any(m in s for m in ("元", "人民币", "整", "角", "分"))
+
+
+# 阿拉伯金额正则：货币符号/人民币前缀 + 数字 + 单位（带金额标记才算金额，排除年份/案号/日期）
+AMOUNT_TOKEN_RE = r"(?:人民币|￥|¥)?\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"
 
 
 @lru_cache(maxsize=8)
 def _text_number_tokens(text: str) -> tuple:
-    """原文中的金额 token 数值列表（含 万元/亿元 等单位换算 + 汉字金额归一化），按原文缓存供数字字段溯源复用。
-    全文只扫描一次。"""
+    """原文中的金额 token 数值列表（含 万元/亿元 换算、汉字金额归一化与角/分小数）。
+    只认带金额标记的数字：阿拉伯数字须带单位/货币符号，汉字金额须带 元/人民币/整/角/分，
+    排除年份、案号、日期、法条、期限等非金额数字。按原文缓存。"""
     out = []
-    for m in re.finditer(r"[\d，,．.][\d，,．.]*(?:\s*(?:万元|亿元|元|人民币|￥|¥))?", text):
+    for m in re.finditer(AMOUNT_TOKEN_RE, text):
         v = _parse_amount(m.group(0))
         if v is not None:
             out.append(v)
     for m in _CN_AMOUNT_RE.finditer(text):
-        v = _parse_amount(m.group(0))
+        tok = m.group(0)
+        if not _has_money_marker(tok):
+            continue
+        v = _parse_amount(tok)
         if v is not None:
             out.append(v)
     return tuple(out)
 
 
 def _amount_token_match(target, text: str) -> bool:
-    """目标金额是否与原文某个数字 token 数值相等（含 万元/亿元 换算，如 80000 可匹配 "8万元"）。"""
+    """目标金额是否与原文某个金额 token 数值相等（含 万元/亿元 换算、汉字金额归一化与角/分，如 80000 可匹配 "8万元"、2000 可匹配 "二千元"）。"""
     if target is None:
         return False
     return any(parsed == target for parsed in _text_number_tokens(text))
@@ -365,12 +414,11 @@ CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿"
                   "赔偿金", "赔偿款", "损害赔偿", "赔偿金额"]
 AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度（如 832552.67 → 832552.665）；溯源判定不使用容差
 MAX_REGEN = 2      # 每个 voter 内字段溯源不通过的最大重生成次数
-AMOUNT_TOKEN_RE = r"\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"  # 带单位才算金额，排除年份/案号
 
 
 @lru_cache(maxsize=8)
 def _source_amount_values(text: str, window: int = 100) -> tuple:
-    """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带单位的金额（应加算的部分）。
+    """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带金额标记的金额（应加算的部分）。
     触发词覆盖诉讼请求区 / 标的额 / 赔偿金 / 裁判区（与各 skill 字段触发词对齐）；
     返回 ((数值, 原文片段), ...) 按数值去重，片段供重生成提示让模型按多段原文复核。
     按原文缓存（provenance_fails/_regen_hint/restore_amount_precision 反复调用，全文只扫描一次）；
@@ -391,7 +439,10 @@ def _source_amount_values(text: str, window: int = 100) -> tuple:
                 ctx = text[max(0, abs_start - 45): abs_end + 15]
                 vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
             for am in _CN_AMOUNT_RE.finditer(seg):
-                v = _parse_amount(am.group(0))
+                tok = am.group(0)
+                if not _has_money_marker(tok):
+                    continue
+                v = _parse_amount(tok)
                 if v is None or v <= 0 or v in seen:
                     continue
                 seen.add(v)
@@ -523,9 +574,9 @@ def _text_provenance_ok(value, text: str, field: str, nt: str | None = None) -> 
 
 def provenance_fails(cand: dict, text: str) -> list[str]:
     """全字段溯源复合判定（除 SKIP_PROVENANCE_FIELDS 与 提取说明），返回未通过、需重生成的字段列表：
-    - 数字字段：数值与原文某数字 token 精确相等（含 万元/亿元 换算）；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
+    - 数字字段：数值与原文某金额 token 精确相等（含 万元/亿元 换算、汉字金额归一化与角/分）；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
     - 文本字段：NFKC+去空白归一化后为原文子串（日期类字段支持年月日数字匹配）
-    - null/空/无法解析的值跳过（视为通过）"""
+    - 文本字段 null/空/无法归一化跳过（视为通过）；数字字段非空但无法解析视为不通过（触发重生成）"""
     claim_vals = [v for v, _ in _source_amount_values(text)]
     nt = _provenance_norm(text)
     fails = []
@@ -540,6 +591,7 @@ def provenance_fails(cand: dict, text: str) -> list[str]:
             else:
                 parsed = _parse_amount(v)
                 if parsed is None:
+                    fails.append(f)
                     continue
                 target = parsed
             # 1) 单值精确匹配（数值相等，含 万元/亿元 换算）
