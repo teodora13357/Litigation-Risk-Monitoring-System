@@ -3,6 +3,9 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from provenance_utils import DATE_FIELDS, _date_digits_match, _provenance_norm
+
 
 def norm_key(s: str) -> str:
     """归一化文档名/键，用于匹配：去除扩展名、空白、全角转半角。"""
@@ -12,28 +15,6 @@ def norm_key(s: str) -> str:
     s = re.sub(r"\.pdf$", "", s, flags=re.I)
     s = re.sub(r"\s+", "", s)
     return s
-
-
-def norm_text(s) -> str:
-    """归一化文本值：去空白、全角转半角、统一括号和连字符。"""
-    if s is None:
-        return ""
-    s = str(s)
-    # 全角转半角
-    s = s.replace("（", "(").replace("）", ")")
-    s = s.replace("：", ":").replace("，", ",").replace("。", ".")
-    s = s.replace("　", "")
-    # 连字符统一为半角 -
-    s = s.replace("‑", "-").replace("–", "-").replace("—", "-").replace("－", "-")
-    s = re.sub(r"\s+", "", s)
-    return s
-
-
-def _chinese_digits(s: str) -> str:
-    """将中文数字转为阿拉伯数字（用于数值/期限类字段比较）。"""
-    cn = {"零": "0", "一": "1", "二": "2", "两": "2", "三": "3",
-          "四": "4", "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
-    return "".join(cn.get(c, c) for c in s)
 
 
 def _is_null(v) -> bool:
@@ -46,7 +27,8 @@ def _is_null(v) -> bool:
 
 
 def norm_value(v):
-    """归一化字段值用于比较（支持标量/list/dict）。"""
+    """归一化字段值用于比较（支持标量/list/dict）；文本先做溯源归一化
+    （NFKC + 部首补充块映射 + 去空白 + 去标点，保留小数点 .），与溯源侧逻辑一致。"""
     if v is None:
         return None
     if isinstance(v, list):
@@ -57,16 +39,22 @@ def norm_value(v):
         return {k: norm_value(val) for k, val in v.items()}
     if isinstance(v, (int, float)):
         return str(v)
-    return _chinese_digits(norm_text(v))
+    return _provenance_norm(v)
 
 
-def values_equal(a, b) -> bool:
-    """比较归一化后的两个字段值是否一致（null 与 无法根据已有信息推断 视为一致）。"""
+def values_equal(a, b, field=None) -> bool:
+    """比较两个字段值：先按溯源逻辑归一化再比对；日期类字段额外支持年月日数字分组匹配
+    （与溯源 _date_digits_match 一致，容忍中文/ISO/零填充格式差异）。
+    null 与 无法根据已有信息推断 视为一致。"""
     if _is_null(a) and _is_null(b):
         return True
     if _is_null(a) or _is_null(b):
         return False
-    return norm_value(a) == norm_value(b)
+    if norm_value(a) == norm_value(b):
+        return True
+    if field in DATE_FIELDS and (_date_digits_match(a, b) or _date_digits_match(b, a)):
+        return True
+    return False
 
 
 def load_json_lenient(path: Path) -> dict:
@@ -123,13 +111,6 @@ def _unwrap_confidence(v):
     return None
 
 
-def _strip_space(v):
-    """去除字符串中的全部空白（含全角空格），用于案号比较。"""
-    if isinstance(v, str):
-        return re.sub(r"\s+", "", v)
-    return v
-
-
 def compare_folder(folder: Path) -> dict:
     """对比一个文件夹的 results 与 gt，返回字段统计。"""
     results_files = sorted(folder.glob("*_results.json"))
@@ -172,10 +153,8 @@ def compare_folder(folder: Path) -> dict:
             raw_res = rv.get(field)
             res_val = _unwrap_value(raw_res)
             conf = _unwrap_confidence(raw_res)
-            # 案号比较前去除所有空格（gt 与结果可能带/不带空格）
-            cmp_gt = _strip_space(gt_val) if field == "案号" else gt_val
-            cmp_res = _strip_space(res_val) if field == "案号" else res_val
-            ok = values_equal(cmp_gt, cmp_res)
+            # 先按溯源逻辑归一化再比对（案号等含空格/标点差异由归一化统一处理）
+            ok = values_equal(gt_val, res_val, field=field)
             if ok:
                 doc_matched += 1
             st = field_stats.setdefault(field, {"matched": 0, "total": 0, "conf_sum": 0.0, "conf_count": 0})

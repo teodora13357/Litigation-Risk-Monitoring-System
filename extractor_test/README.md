@@ -1,7 +1,9 @@
 # 法律文书解析提取系统架构说明
 
 > 整理时间：2026-08-19
-> 对象：`/Users/olof.chenx2x.net/s4/langchain.ipynb`；`extractor_test/parse_doc.py`、`extractor_test/batch_test.py` 为同逻辑的独立脚本/批处理版本
+> 对象：`/Users/olof.chenx2x.net/s4/langchain.ipynb`；`extractor_test/parse_doc.py`、`extractor_test/batch_test.py` 为同逻辑的独立脚本/批处理版本；溯源归一化共用 `scripts/provenance_utils.py`，`batch_eval.py` 对比结果/GT 时先按同一套溯源逻辑归一化再比较
+
+> 约定：可复用逻辑统一放在 `scripts/`（如 `loader.py`、`provenance_utils.py`），`extractor_test` 内的脚本通过 `sys.path` 引入，避免各脚本重复实现。
 
 ---
 
@@ -101,6 +103,9 @@ PDF
   对多次生成结果逐字段取众数（按 JSON 序列化比较，支持 list/dict 值，平局保留最先出现）。返回 `(众数结果, 每字段众数出现次数)`。
 
 ### 3.2 全字段溯源（布尔判定）
+
+- **`scripts/provenance_utils.py`（共享归一化）**
+  溯源文本归一化统一收口：`_provenance_norm`（NFKC + CJK 部首补充块映射 + 去空白 + 去标点，保留小数点 `.`）、`_digit_groups` / `_date_digits_match`（日期类字段年月日数字分组匹配）、`_text_provenance_ok`（归一化后为原文子串判定）。`parse_doc.py` / `batch_test.py` 与 `batch_eval.py` 均从此模块导入；`batch_eval` 对 GT/结果两值**先归一化再相等比较**，日期类字段（`DATE_FIELDS`）额外做年月日数字分组匹配。
 
 - **`_text_number_tokens(text) -> tuple`**（`@lru_cache`）
   原文中的金额 token 数值列表（含 `万元/亿元` 等单位换算 + **汉字金额归一化** + **角/分小数**）。只认带金额标记的数字：阿拉伯数字须带货币符号/单位，汉字金额须带 `元/人民币/整/角/分`，从而排除年份、案号、日期、法条、期限等非金额数字。按原文缓存供 `_amount_token_match` 复用，全文只扫描一次。
