@@ -279,7 +279,7 @@ def _parse_files_to_pages(page_files: list) -> list:
     data = {
         "lang_list": ["ch"],
         "backend": "pipeline",
-        "parse_method": "auto",
+        "parse_method": "ocr",
         "formula_enable": "true",
         "table_enable": "true",
         "return_md": "true",
@@ -545,7 +545,6 @@ def recognize_document(file_path: str, mime_type: str = "") -> dict:
     except Exception as exc:  # noqa: BLE001 —— 识别失败不向上抛，统一返回友好提示
         logger.exception("OCR 识别失败: %s", file_path)
         return _fail(str(exc))
-
 
 
 

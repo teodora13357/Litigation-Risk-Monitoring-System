@@ -13,8 +13,8 @@
         "原告/申请人",
         "被告/被申请人",
         "涉及主体",
-        "业务类型",
         "标准案由",
+        "业务类型",
         "受理法院/仲裁委",
         "标的额",
         "诉讼请求金额",
@@ -119,28 +119,6 @@
             }
           }
         },
-        "业务类型": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "value"
-          ],
-          "properties": {
-            "value": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "description": "业务类型 或 null"
-            },
-            "置信度": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 100,
-              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
-            }
-          }
-        },
         "标准案由": {
           "type": "object",
           "additionalProperties": false,
@@ -154,6 +132,28 @@
                 "null"
               ],
               "description": "标准案由 或 null"
+            },
+            "置信度": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "该字段提取置信度（0-100），由后处理根据多次提取投票的众数占比计算，模型不输出此字段"
+            }
+          }
+        },
+        "业务类型": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value"
+          ],
+          "properties": {
+            "value": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "业务类型 或 null"
             },
             "置信度": {
               "type": "number",
@@ -259,8 +259,8 @@
             "原告/申请人",
             "被告/被申请人",
             "涉及主体",
-            "业务类型",
             "标准案由",
+            "业务类型",
             "受理法院/仲裁委",
             "标的额",
             "诉讼请求金额",
@@ -287,13 +287,13 @@
               "type": "string",
               "description": "已提取N个 | 无可识别主体"
             },
-            "业务类型": {
-              "type": "string",
-              "description": "已提取:由标准案由反查 | 无法根据已有信息推断 | 未匹配到已知案由"
-            },
             "标准案由": {
               "type": "string",
               "description": "已提取:命中关键词XXX | 未匹配到已知案由"
+            },
+            "业务类型": {
+              "type": "string",
+              "description": "已提取:由标准案由反查 | 无法根据已有信息推断 | 未匹配到已知案由"
             },
             "受理法院/仲裁委": {
               "type": "string",

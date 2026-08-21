@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 import time
@@ -16,6 +17,10 @@ from langchain.agents import create_agent
 from deepagents.middleware import SkillsMiddleware
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain_core.utils.uuid import uuid7
+
+# 内网/本机调用不走代理，避免 VPN 影响
+os.environ.setdefault("NO_PROXY", "192.168.10.250,127.0.0.1,localhost")
+os.environ.setdefault("no_proxy", os.environ["NO_PROXY"])
 
 BASE_URL = "http://192.168.10.250:8000"
 SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/Litigation-Risk-Monitoring-System/prompts/skills")
@@ -38,12 +43,12 @@ TYPE_TO_SKILL = [
 
 # 每个 skill 的提取字段（不含 文书类型 和 提取说明）
 SKILL_FIELDS = {
-    "complaint-arbitration-extract": ["原告/申请人", "被告/被申请人", "涉及主体", "业务类型", "标准案由", "受理法院/仲裁委", "标的额", "诉讼请求金额", "赔偿金"],
-    "defense-notice-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "业务类型", "标准案由", "受理法院/仲裁委", "立案日期"],
+    "complaint-arbitration-extract": ["原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "标的额", "诉讼请求金额", "赔偿金"],
+    "defense-notice-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "立案日期"],
     "evidence-notice-extract": ["案号", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "标准案由", "业务类型", "举证期限"],
-    "judgment-ruling-mediation-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "业务类型", "标准案由", "标的额", "赔偿金", "诉讼请求金额", "裁判结果"],
+    "judgment-ruling-mediation-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "标准案由", "业务类型", "标的额", "赔偿金", "诉讼请求金额", "裁判结果"],
     "summons-hearing-extract": ["案号", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "应到时间", "标准案由", "业务类型", "应到地点"],
-    "appeal-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "业务类型", "标准案由", "受理法院/仲裁委", "标的额", "诉讼请求金额", "上诉请求"],
+    "appeal-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "标的额", "诉讼请求金额", "上诉请求"],
 }
 
 
@@ -414,14 +419,20 @@ CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿"
                   "赔偿金", "赔偿款", "损害赔偿", "赔偿金额"]
 AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度（如 832552.67 → 832552.665）；溯源判定不使用容差
 MAX_REGEN = 2      # 每个 voter 内字段溯源不通过的最大重生成次数
+_AMOUNT_CTX_BEFORE = 24  # 候选金额上下文：金额前文长度（字符）
+_AMOUNT_CTX_AFTER = 10   # 候选金额上下文：金额后文长度（字符）
+_NEAREST_TOL_RATIO = 0.2  # 重生成提示“最接近加算值”搜索带宽：相对提取值的比例（0.2 = ±20%）
 
 
 @lru_cache(maxsize=8)
 def _source_amount_values(text: str, window: int = 100) -> tuple:
     """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带金额标记的金额（应加算的部分）。
     触发词覆盖诉讼请求区 / 标的额 / 赔偿金 / 裁判区（与各 skill 字段触发词对齐）；
-    返回 ((数值, 原文片段), ...) 按数值去重，片段供重生成提示让模型按多段原文复核。
-    按原文缓存（provenance_fails/_regen_hint/restore_amount_precision 反复调用，全文只扫描一次）；
+    返回 ((数值, 原文片段), ...) 按数值去重，每个候选都带金额上下文片段（前 _AMOUNT_CTX_BEFORE / 后 _AMOUNT_CTX_AFTER 字符），
+    供重生成提示让模型按多段原文复核。
+    仅用于 _regen_hint 展示多段原文上下文；
+    溯源判定与金额还原用 _text_number_tokens（全文、保留重复金额，见 provenance_fails / restore_amount_precision）。
+    按原文缓存（全文只扫描一次）；
     返回 tuple（不可变，防止缓存结果被调用方修改）。"""
     vals = []
     seen = set()
@@ -436,7 +447,7 @@ def _source_amount_values(text: str, window: int = 100) -> tuple:
                 seen.add(v)
                 abs_start = base + am.start()
                 abs_end = base + am.end()
-                ctx = text[max(0, abs_start - 45): abs_end + 15]
+                ctx = text[max(0, abs_start - _AMOUNT_CTX_BEFORE): abs_end + _AMOUNT_CTX_AFTER]
                 vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
             for am in _CN_AMOUNT_RE.finditer(seg):
                 tok = am.group(0)
@@ -448,7 +459,7 @@ def _source_amount_values(text: str, window: int = 100) -> tuple:
                 seen.add(v)
                 abs_start = base + am.start()
                 abs_end = base + am.end()
-                ctx = text[max(0, abs_start - 45): abs_end + 15]
+                ctx = text[max(0, abs_start - _AMOUNT_CTX_BEFORE): abs_end + _AMOUNT_CTX_AFTER]
                 vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
     return tuple(vals)
 
@@ -574,10 +585,10 @@ def _text_provenance_ok(value, text: str, field: str, nt: str | None = None) -> 
 
 def provenance_fails(cand: dict, text: str) -> list[str]:
     """全字段溯源复合判定（除 SKIP_PROVENANCE_FIELDS 与 提取说明），返回未通过、需重生成的字段列表：
-    - 数字字段：数值与原文某金额 token 精确相等（含 万元/亿元 换算、汉字金额归一化与角/分）；或字段∈SUMMED_FIELDS 且值等于原文加算金额候选的子集和（精确）
+    - 数字字段：数值与原文某金额 token 精确相等（含 万元/亿元 换算、汉字金额归一化与角/分）；或字段∈SUMMED_FIELDS 且值等于全文金额 token（保留重复金额）的子集和（精确）
     - 文本字段：NFKC+去空白归一化后为原文子串（日期类字段支持年月日数字匹配）
     - 文本字段 null/空/无法归一化跳过（视为通过）；数字字段非空但无法解析视为不通过（触发重生成）"""
-    claim_vals = [v for v, _ in _source_amount_values(text)]
+    amount_tokens = _text_number_tokens(text)
     nt = _provenance_norm(text)
     fails = []
     for f, v in cand.items():
@@ -597,9 +608,9 @@ def provenance_fails(cand: dict, text: str) -> list[str]:
             # 1) 单值精确匹配（数值相等，含 万元/亿元 换算）
             if _amount_token_match(target, text):
                 continue
-            # 2) 加算：子集和（按最大小数位缩放为整数，保留全部小数精确比较）
+            # 2) 加算：子集和（候选=全文金额 token，保留重复金额，按最大小数位缩放为整数后精确比较）
             if f in SUMMED_FIELDS:
-                ints, itarget, _, _ = _scale_to_int(claim_vals, target)
+                ints, itarget, _, _ = _scale_to_int(amount_tokens, target)
                 if _subset_sum_possible(ints, itarget, 0):
                     continue
             fails.append(f)
@@ -643,24 +654,43 @@ def _subset_sum_value(vals, target, tol, max_terms: int = 12):
     return best[0]
 
 
+def _nearest_subset_sum(vals, target, max_terms: int = 12):
+    """返回与 target 距离最近的不超过 max_terms 项子集和（缩放整数）；超过 ±20% 带宽或无法组成时返回 None。
+    二分最小容差 + _subset_sum_value 剪枝回溯，避免全组合枚举。"""
+    vals = sorted((v for v in vals if v > 0), reverse=True)
+    if not vals or target <= 0:
+        return None
+    hi = max(1, int(target * _NEAREST_TOL_RATIO))
+    if _subset_sum_value(vals, target, hi, max_terms) is None:
+        return None
+    lo = 0
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _subset_sum_value(vals, target, mid, max_terms) is not None:
+            hi = mid
+        else:
+            lo = mid + 1
+    return _subset_sum_value(vals, target, lo, max_terms)
+
+
 def restore_amount_precision(value, text: str, field: str):
     """把被模型四舍五入（如 832552.67）的金额字段值还原为原文的全精度值（如 832552.665）；
-    无对应原文金额时原样返回。"""
+    候选=全文金额 token（保留重复金额，与 provenance_fails 一致）；无对应原文金额时原样返回。"""
     if value is None:
         return value
     target = value if isinstance(value, (int, float)) else _parse_amount(value)
     if target is None:
         return value
-    claim_vals = [v for v, _ in _source_amount_values(text)]
-    if not claim_vals:
+    amount_tokens = _text_number_tokens(text)
+    if not amount_tokens:
         return value
     # 1) 直接命中：与原文某金额在舍入容差内 → 用原文全精度
-    best = min(claim_vals, key=lambda c: abs(c - target))
+    best = min(amount_tokens, key=lambda c: abs(c - target))
     if abs(best - target) <= AMOUNT_TOL:
         return best
     # 2) 加算命中：某子集和与 target 在容差内 → 用该子集精确和（全精度）
     if field in SUMMED_FIELDS:
-        ints, itarget, scale, tol_int = _scale_to_int(claim_vals, target)
+        ints, itarget, scale, tol_int = _scale_to_int(amount_tokens, target)
         s = _subset_sum_value(ints, itarget, tol_int)
         if s is not None:
             val = s / scale
@@ -672,7 +702,7 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
     """为重生成拼接溯源提示：数字字段给出还原金额，并按多段原文片段让模型复核；
     文本字段提示严格按原文提取。"""
     cands = _source_amount_values(text)
-    segs = "；".join(f"[{v}元]「{ctx}」" for v, ctx in cands[:5])
+    segs = "；".join(f"[{v}元]「{ctx}」" for v, ctx in cands)
     parts = []
     for f in fails:
         v = cand.get(f)
@@ -681,6 +711,15 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
             restored = restore_amount_precision(v, text, f) if v is not None and str(v).strip() else None
             if restored is not None and str(restored) != str(v):
                 hint += f"，请按原文还原值 {restored}元 输出"
+            if f in SUMMED_FIELDS and v is not None and str(v).strip():
+                target = v if isinstance(v, (int, float)) else _parse_amount(v)
+                if target is not None:
+                    ints, itarget, scale, _ = _scale_to_int(_text_number_tokens(text), target)
+                    near = _nearest_subset_sum(ints, itarget)
+                    if near is not None and near != itarget:
+                        val = near / scale
+                        val = int(val) if val == int(val) else val
+                        hint += f"；原文金额可加算出的最接近值为 {val}元，请核对是否为正确答案"
             if segs:
                 hint += f"（原文金额候选及上下文，请逐段复核后提取：{segs}；如需加算请按各项之和）"
         else:
@@ -720,14 +759,34 @@ def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
     return extract_json(response.get("messages", [])[-1].content)
 
 
-def extract_voter(extract_agent_, skill_name: str, text: str) -> dict:
-    """单个 voter：提取并做全字段溯源布尔判定（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。"""
+def extract_voter(extract_agent_, voter_idx: int, skill_name: str, text: str) -> dict:
+    """单个 voter：提取并做全字段溯源布尔判定（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。
+    重生成只重新提取未溯源通过的字段，已通过字段沿用上次结果。"""
     cand, fails = None, []
     for attempt in range(MAX_REGEN + 1):
-        msgs = [("user", text)]
         if attempt > 0 and fails:
-            msgs.append(("user", f"溯源提示：{_regen_hint(fails, cand, text)}。请重新提取。"))
-        cand = align_to_ref(invoke_extract_msgs(extract_agent_, msgs), skill_name)
+            hint = _regen_hint(fails, cand, text)
+            print(f"  → 溯源提示：{hint}", flush=True)
+            if all(f in NUMBER_FIELDS for f in fails):
+                # 全是数字字段失败：只发备选数字+上下文片段，不再带完整原文
+                msgs = [("user", f"溯源提示：{hint}。请重新提取。")]
+            else:
+                # 含文本字段失败：仍须带完整原文（文本字段提示不含原文片段）
+                msgs = [("user", text), ("user", f"溯源提示：{hint}。请重新提取。")]
+            agent = make_agent(extract_prompt(fails))   # 只重生成失败字段
+        else:
+            agent = extract_agent_
+            msgs = [("user", text)]
+        cand_new = align_to_ref(invoke_extract_msgs(agent, msgs), skill_name)
+        if attempt > 0 and fails:
+            # 合并：只更新失败字段，保留已通过字段
+            for f in fails:
+                cand[f] = cand_new[f]
+            if "提取说明" in cand_new:
+                old_notes = cand.get("提取说明")
+                cand["提取说明"] = {**(old_notes if isinstance(old_notes, dict) else {}), **cand_new["提取说明"]}
+        else:
+            cand = cand_new
         fails = provenance_fails(cand, text)
         if not fails:
             break
@@ -735,7 +794,7 @@ def extract_voter(extract_agent_, skill_name: str, text: str) -> dict:
         for f in fails:
             hit, snip = _best_source_snippet(cand.get(f), text, f)
             details.append(f"{f}={cand.get(f)}（命中 {hit}，原文「{snip}」）")
-        print(f"[voter] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
+        print(f"[voter {voter_idx}] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
     return cand
 
 
@@ -803,7 +862,7 @@ def process_document(classify_agent_, md_content: str, num_votes: int = NUM_VOTE
         return {"文书类型": doc_type, "提取说明": {"错误": f"无对应提取 skill: {doc_type}"}}
     fields = SKILL_FIELDS[skill_name]
     extract_agent = make_agent(extract_prompt(fields))
-    results = [extract_voter(extract_agent, skill_name, md_content) for _ in range(num_votes)]
+    results = [extract_voter(extract_agent, v, skill_name, md_content) for v in range(num_votes)]
     extracted, counts = majority_vote(results)
     return wrap_extracted(extracted, counts, md_content, doc_type, num_votes)
 
@@ -820,7 +879,7 @@ def submit_parse_task(folder: Path) -> str:
             files=files,
             data={
                 "lang_list": ["ch"],
-                "parse_method": "auto",
+                "parse_method": "ocr",
                 "backend": "hybrid-engine",
                 "effort": "high",
                 "formula_enable": "true",
