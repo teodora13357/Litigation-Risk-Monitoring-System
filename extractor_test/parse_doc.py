@@ -100,69 +100,26 @@ model = ChatOpenAI(
 from deepagents.middleware import SkillsMiddleware
 from deepagents.backends.filesystem import FilesystemBackend
 
-SKILLS_ROOT = Path("/Users/olof.chenx2x.net/s4/Litigation-Risk-Monitoring-System/prompts/skills")
+import sys
 
-TYPE_TO_SKILL = [
-    ("应诉", "defense-notice-extract"),
-    ("参加诉讼", "defense-notice-extract"),
-    ("起诉状", "complaint-arbitration-extract"),
-    ("仲裁申请", "complaint-arbitration-extract"),
-    ("上诉状", "appeal-extract"),
-    ("举证", "evidence-notice-extract"),
-    ("传票", "summons-hearing-extract"),
-    ("开庭通知", "summons-hearing-extract"),
-    ("改期开庭", "summons-hearing-extract"),
-    ("判决书", "judgment-ruling-mediation-extract"),
-    ("裁定书", "judgment-ruling-mediation-extract"),
-    ("调解书", "judgment-ruling-mediation-extract"),
-]
+# 统一 skill loader（字段清单单一事实来源）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+import loader
 
-SKILL_FIELDS = {
-    "complaint-arbitration-extract": ["原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "标的额", "诉讼请求金额", "赔偿金"],
-    "defense-notice-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "立案日期"],
-    "evidence-notice-extract": ["案号", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "标准案由", "业务类型", "举证期限"],
-    "judgment-ruling-mediation-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "标准案由", "业务类型", "标的额", "赔偿金", "诉讼请求金额", "裁判结果"],
-    "summons-hearing-extract": ["案号", "被告/被申请人", "涉及主体", "受理法院/仲裁委", "应到时间", "标准案由", "业务类型", "应到地点"],
-    "appeal-extract": ["案号", "原告/申请人", "被告/被申请人", "涉及主体", "标准案由", "业务类型", "受理法院/仲裁委", "标的额", "诉讼请求金额", "上诉请求"],
-}
+SKILLS_ROOT = loader.SKILLS_ROOT
+TYPE_TO_SKILL = loader.TYPE_TO_SKILL
 
 
 def skill_for_doc_type(doc_type: str):
-    for kw, skill in TYPE_TO_SKILL:
-        if kw in doc_type:
-            return skill
-    return None
+    return loader.skill_for_doc_type(doc_type)
 
 
-@tool
 def load_skill(skill_name: str) -> str:
-    """读取指定 skill 的完整指令（SKILL.md 全文）。
+    return loader.load_skill(skill_name)
 
-    Available skills:
-    - file-type-classification: 文书类型判定
-    - summons-hearing-extract: 传票/开庭通知书/改期开庭通知书字段提取
-    - evidence-notice-extract: 举证通知书字段提取
-    - complaint-arbitration-extract: 起诉状/仲裁申请书字段提取
-    - defense-notice-extract: 应诉通知书/参加诉讼通知书字段提取
-    - judgment-ruling-mediation-extract: 判决书/裁定书/调解书字段提取
-    - appeal-extract: 上诉状字段提取
-    """
-    name = str(skill_name or "").strip().strip("/").strip(".")
-    if (SKILLS_ROOT / name).is_dir():
-        return (SKILLS_ROOT / name / "SKILL.md").read_text(encoding="utf-8")
-    for d in SKILLS_ROOT.iterdir():
-        if d.is_dir() and (d.name in name or name in d.name):
-            return (SKILLS_ROOT / d.name / "SKILL.md").read_text(encoding="utf-8")
-    alias = {"传票": "summons-hearing-extract", "开庭通知": "summons-hearing-extract",
-             "起诉状": "complaint-arbitration-extract", "仲裁申请书": "complaint-arbitration-extract",
-             "举证": "evidence-notice-extract", "应诉": "defense-notice-extract",
-             "判决": "judgment-ruling-mediation-extract", "裁定": "judgment-ruling-mediation-extract",
-             "调解": "judgment-ruling-mediation-extract", "上诉状": "appeal-extract", "分类": "file-type-classification"}
-    for k, v in alias.items():
-        if k in name:
-            return (SKILLS_ROOT / v / "SKILL.md").read_text(encoding="utf-8")
-    candidates = [d.name for d in SKILLS_ROOT.iterdir() if d.is_dir()]
-    return f"未找到 skill '{skill_name}'，可用: {candidates}"
+
+load_skill.__doc__ = loader.available_skills_docstring()
+load_skill = tool(load_skill)
 
 
 def make_agent(system_prompt: str | None = None):
@@ -178,19 +135,8 @@ def make_agent(system_prompt: str | None = None):
     )
 
 
-@lru_cache(maxsize=16)
 def _ref_fields(skill_name: str) -> list[str]:
-    """从 ref.json 读取该 skill 的字段清单（正常分支，去掉提取说明）。
-    按 skill 名缓存：每个进程只读一次磁盘（align_to_ref 每个 voter/attempt 都会调用）；
-    修改 ref.json 后需 `_ref_fields.cache_clear()` 或重启进程。"""
-    rf = SKILLS_ROOT / skill_name / "ref.json"
-    sch = json.loads(rf.read_text(encoding="utf-8"))
-    for br in sch.get("oneOf", []):
-        props = br.get("properties", {})
-        if "错误" in props:
-            continue
-        return [k for k in props if k != "提取说明"]
-    return []
+    return loader.skill_fields(skill_name)
 
 
 def extract_json(text: str) -> dict:
@@ -794,7 +740,7 @@ def extract_voter(voter_idx: int, skill_name: str, text: str) -> dict:
             fields = fails          # 只重生成失败字段
         else:
             msgs = [("user", text)]
-            fields = SKILL_FIELDS[skill_name]
+            fields = loader.skill_fields(skill_name)
         extract_agent = make_agent(extract_prompt(fields))
         ext_resp = extract_agent.invoke(
             {"messages": msgs},
