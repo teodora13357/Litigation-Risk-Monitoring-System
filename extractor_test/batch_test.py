@@ -6,7 +6,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_CEILING
 from functools import lru_cache
+from operator import add
 from pathlib import Path
+from typing import Annotated, TypedDict
 
 import requests
 from tqdm import tqdm
@@ -16,6 +18,7 @@ from langchain.agents import create_agent
 from deepagents.middleware import SkillsMiddleware
 from deepagents.backends.filesystem import FilesystemBackend
 from langchain_core.utils.uuid import uuid7
+from langgraph.graph import StateGraph, START, END
 
 # 内网/本机调用不走代理，避免 VPN 影响
 os.environ.setdefault("NO_PROXY", "192.168.10.250,127.0.0.1,localhost")
@@ -71,6 +74,19 @@ def make_agent(system_prompt: str | None = None):
     )
 
 
+_AGENT_CACHE: dict[str, object] = {}
+
+
+def get_agent(system_prompt: str | None = None):
+    """按 system_prompt 缓存 agent，避免每个 voter/每次重生成重复构建 create_agent。"""
+    key = system_prompt or ""
+    agent = _AGENT_CACHE.get(key)
+    if agent is None:
+        agent = make_agent(system_prompt)
+        _AGENT_CACHE[key] = agent
+    return agent
+
+
 CLASSIFY_PROMPT = """你是一名严谨的法律文书解析专家。
 用户输入一份法律文书。请判断其文书类型。
 
@@ -80,7 +96,7 @@ CLASSIFY_PROMPT = """你是一名严谨的法律文书解析专家。
 
 判定规则要点：
 1. 扫描全文，对 SKILL 中"需完整解析的 9 类文书"逐类型做关键词子串匹配。
-2. 只要命中任意 9 类文书的关键词（如"传票"、"开庭通知"、"改期开庭"、"起诉状"、"判决书"、"举证通知"等），"是否需解析"就必须为"是"。
+2. 只要命中任意 9 类文书的关键词（如"传票"、"开庭通知"、"改期开庭"、"起诉状"、"判决书"、"举证通知"、"应诉通知"、"参加诉讼通知"等），"是否需解析"就必须为"是"。
 3. "改期开庭通知书"属于类型"开庭传票/通知书"（命中关键词"改期开庭"/"开庭通知"），必须判定"是否需解析"为"是"。
 4. 仅当 9 类均未命中、且属于证据材料或程序性附件时，"是否需解析"才为"否"。
 5. "判定依据"记录命中的关键词列表。
@@ -619,46 +635,170 @@ def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
         {"messages": messages},
         config={"configurable": {"thread_id": str(uuid7())}},
     )
-    return extract_json(response.get("messages", [])[-1].content)
+    content = response.get("messages", [])[-1].content
+    try:
+        return extract_json(content)
+    except ValueError as e:
+        # 模型偶发输出纯分析文本（非 JSON），此时按空对象继续，避免整篇文书失败；
+        # 空对象会被 align_to_ref 补成全 null，并让溯源跳过 null 字段。
+        print(f"  [警告] 提取响应未包含 JSON，按空对象处理: {e}", flush=True)
+        return {}
 
 
-def extract_voter(extract_agent_, voter_idx: int, skill_name: str, text: str) -> dict:
-    """单个 voter：提取并做全字段溯源布尔判定（除 SKIP_PROVENANCE_FIELDS），返回溯源合格的结果。
-    重生成只重新提取未溯源通过的字段，已通过字段沿用上次结果。"""
-    cand, fails = None, []
-    for attempt in range(MAX_REGEN + 1):
-        if attempt > 0 and fails:
-            hint = _regen_hint(fails, cand, text)
-            print(f"  → 溯源提示：{hint}", flush=True)
-            if all(f in NUMBER_FIELDS for f in fails):
-                # 全是数字字段失败：只发备选数字+上下文片段，不再带完整原文
-                msgs = [("user", f"溯源提示：{hint}。请重新提取。")]
-            else:
-                # 含文本字段失败：仍须带完整原文（文本字段提示不含原文片段）
-                msgs = [("user", text), ("user", f"溯源提示：{hint}。请重新提取。")]
-            agent = make_agent(extract_prompt(fails))   # 只重生成失败字段
+class State(TypedDict):
+    doc: str
+    runnable: bool
+    cls_result: dict
+    need_parse: bool
+    doc_type: str
+    skill_name: str
+    voter: int
+    attempt: int
+    cand: dict
+    fail_fields: list
+    responses: Annotated[list, add]
+    done: bool
+    final: dict
+
+
+def classify_node(state: State) -> dict:
+    """判型节点：调用 file-type-classification skill，输出文书类型与是否需解析。"""
+    doc = state["doc"]
+    try:
+        cls = invoke_classify(get_agent(CLASSIFY_PROMPT), doc)
+    except Exception as e:
+        return {"runnable": False, "final": {"错误": f"分类失败: {e}"}}
+    need_parse = str(cls.get("是否需解析") or "").strip().lower().startswith(("是", "true", "1"))
+    return {
+        "runnable": True,
+        "cls_result": cls,
+        "doc_type": cls.get("文书类型") or "",
+        "need_parse": need_parse,
+    }
+
+
+def parse_check_node(state: State) -> dict:
+    """解析校验节点：根据判型结果映射提取 skill；无需解析/无匹配 skill 时直接产出 final。"""
+    if not state.get("need_parse"):
+        return {"runnable": False, "final": state.get("cls_result") or {}}
+    skill_name = skill_for_doc_type(state["doc_type"])
+    if skill_name is None:
+        return {
+            "runnable": False,
+            "final": {"文书类型": state["doc_type"], "提取说明": {"错误": f"无对应提取 skill: {state['doc_type']}"}},
+        }
+    return {"runnable": True, "skill_name": skill_name}
+
+
+def extract_node(state: State) -> dict:
+    """单个 voter 提取节点：与旧 extract_voter 等价的状态机版本。
+    每 voter 最多 MAX_REGEN+1 次尝试；失败字段单独存 fail_fields，重生成只提取失败字段并合并；
+    溯源通过或次数耗尽后把最终候选 append 进 responses，并推进 voter。"""
+    text = state["doc"]
+    skill_name = state["skill_name"]
+    voter = state["voter"]
+    attempt = state["attempt"]
+    cand = dict(state.get("cand") or {})
+    fails = list(state.get("fail_fields") or [])
+
+    if attempt > 0 and fails:
+        hint = _regen_hint(fails, cand, text)
+        print(f"  → 溯源提示：{hint}", flush=True)
+        if all(f in NUMBER_FIELDS for f in fails):
+            # 全是数字字段失败：只发备选数字+上下文片段，不再带完整原文
+            msgs = [("user", f"溯源提示：{hint}。请重新提取。")]
         else:
-            agent = extract_agent_
-            msgs = [("user", text)]
-        cand_new = align_to_ref(invoke_extract_msgs(agent, msgs), skill_name)
-        if attempt > 0 and fails:
-            # 合并：只更新失败字段，保留已通过字段
-            for f in fails:
-                cand[f] = cand_new[f]
-            if "提取说明" in cand_new:
-                old_notes = cand.get("提取说明")
-                cand["提取说明"] = {**(old_notes if isinstance(old_notes, dict) else {}), **cand_new["提取说明"]}
-        else:
-            cand = cand_new
-        fails = provenance_fails(cand, text)
-        if not fails:
-            break
-        details = []
+            # 含文本字段失败：仍须带完整原文（文本字段提示不含原文片段）
+            msgs = [("user", text), ("user", f"溯源提示：{hint}。请重新提取。")]
+        fields = fails          # 只重生成失败字段
+    else:
+        msgs = [("user", text)]
+        fields = loader.skill_fields(skill_name)
+
+    cand_new = align_to_ref(invoke_extract_msgs(get_agent(extract_prompt(fields)), msgs), skill_name)
+    if attempt > 0 and fails:
+        # 合并：只更新失败字段，保留已通过字段
         for f in fails:
+            cand[f] = cand_new[f]
+        if "提取说明" in cand_new:
+            old_notes = cand.get("提取说明")
+            cand["提取说明"] = {**(old_notes if isinstance(old_notes, dict) else {}), **cand_new["提取说明"]}
+    else:
+        cand = cand_new
+
+    new_fails = provenance_fails(cand, text)
+    if new_fails:
+        details = []
+        for f in new_fails:
             hit, snip = _best_source_snippet(cand.get(f), text, f)
             details.append(f"{f}={cand.get(f)}（命中 {hit}，原文「{snip}」）")
-        print(f"[voter {voter_idx}] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
-    return cand
+        print(f"[voter {voter}] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
+        if attempt < MAX_REGEN:
+            # 还有重生成次数：保存候选与失败字段，回到本节点
+            return {"cand": cand, "fail_fields": new_fails, "attempt": attempt + 1}
+
+    # 溯源通过或次数耗尽：本 voter 收尾，结果入 responses
+    next_voter = voter + 1
+    return {
+        "voter": next_voter,
+        "attempt": 0,
+        "cand": {},
+        "fail_fields": [],
+        "responses": [cand],
+        "done": next_voter >= NUM_VOTES,
+    }
+
+
+def collect_node(state: State) -> dict:
+    """收集节点：多数投票并包装最终输出。"""
+    extracted, counts = majority_vote(state["responses"])
+    return {"final": wrap_extracted(extracted, counts, state["doc"], state["doc_type"], NUM_VOTES)}
+
+
+def route_after_classify(state: State) -> str:
+    return "parse_check" if state.get("runnable") else "end"
+
+
+def route_after_parse(state: State) -> str:
+    return "extract" if state.get("runnable") else "end"
+
+
+def route_after_extract(state: State) -> str:
+    return "collect" if state.get("done") else "extract"
+
+
+_pipeline_graph = None
+
+
+def build_graph():
+    """构建并缓存 langgraph 判型→解析校验→多 voter 提取→投票收尾流水线。"""
+    global _pipeline_graph
+    if _pipeline_graph is not None:
+        return _pipeline_graph
+    graph = StateGraph(State)
+    graph.add_node("classify", classify_node)
+    graph.add_node("parse_check", parse_check_node)
+    graph.add_node("extract", extract_node)
+    graph.add_node("collect", collect_node)
+    graph.add_edge(START, "classify")
+    graph.add_conditional_edges(
+        "classify",
+        route_after_classify,
+        {"parse_check": "parse_check", "end": END},
+    )
+    graph.add_conditional_edges(
+        "parse_check",
+        route_after_parse,
+        {"extract": "extract", "end": END},
+    )
+    graph.add_conditional_edges(
+        "extract",
+        route_after_extract,
+        {"collect": "collect", "extract": "extract"},
+    )
+    graph.add_edge("collect", END)
+    _pipeline_graph = graph.compile()
+    return _pipeline_graph
 
 
 def wrap_extracted(extracted: dict, counts: dict, text: str, doc_type: str, total_votes: int) -> dict:
@@ -712,22 +852,26 @@ def majority_vote(results: list[dict]) -> tuple:
 NUM_VOTES = 20  # 与 parse_doc.py 对齐：每篇文书投票数
 
 
-def process_document(classify_agent_, md_content: str, num_votes: int = NUM_VOTES) -> dict:
-    """先分类，再按类型加载对应 skill 提取（每 voter 字段溯源布尔判定兜底重生成，投票后每字段包装 value/置信度）。"""
-    cls = invoke_classify(classify_agent_, md_content)
-    doc_type = cls.get("文书类型") or ""
-    need_parse = str(cls.get("是否需解析") or "").strip()
-    # 分类模型可能输出 "是, 判定依据：..." 等带附加文字的格式，宽松匹配
-    if not doc_type or not need_parse.lower().startswith(("是", "true", "1")):
-        return cls
-    skill_name = skill_for_doc_type(doc_type)
-    if skill_name is None:
-        return {"文书类型": doc_type, "提取说明": {"错误": f"无对应提取 skill: {doc_type}"}}
-    fields = loader.skill_fields(skill_name)
-    extract_agent = make_agent(extract_prompt(fields))
-    results = [extract_voter(extract_agent, v, skill_name, md_content) for v in range(num_votes)]
-    extracted, counts = majority_vote(results)
-    return wrap_extracted(extracted, counts, md_content, doc_type, num_votes)
+def process_document(md_content: str, num_votes: int = NUM_VOTES) -> dict:
+    """通过 langgraph 流水线处理单篇文书：判型→解析校验→多 voter 提取→投票收尾。"""
+    if num_votes != NUM_VOTES:
+        raise ValueError("batch_test 使用模块级 NUM_VOTES 构建流水线，暂不支持单次覆盖")
+    state = build_graph().invoke({
+        "doc": md_content,
+        "runnable": False,
+        "cls_result": {},
+        "need_parse": False,
+        "doc_type": "",
+        "skill_name": "",
+        "voter": 0,
+        "attempt": 0,
+        "cand": {},
+        "fail_fields": [],
+        "responses": [],
+        "done": False,
+        "final": {},
+    })
+    return state.get("final") or {}
 
 
 def submit_parse_task(folder: Path) -> str:
@@ -788,7 +932,7 @@ def ocr_parse_folder(folder: Path) -> dict:
     return result
 
 
-def extract_folder(folder: Path, ocr_result: dict, classify_agent_, llm_pbar: tqdm) -> None:
+def extract_folder(folder: Path, ocr_result: dict, llm_pbar: tqdm) -> None:
     """对单个文件夹的 OCR 结果做 LLM 字段提取并保存（串行调用）。"""
     results = ocr_result.get("results", ocr_result)
     assert isinstance(results, dict) and results, f"未解析到任何文件内容: {folder}"
@@ -798,7 +942,7 @@ def extract_folder(folder: Path, ocr_result: dict, classify_agent_, llm_pbar: tq
         md_content = info.get("md_content", "") if isinstance(info, dict) else str(info)
         llm_pbar.set_postfix_str(f"{folder.name}/{name}")
         try:
-            extracted = process_document(classify_agent_, md_content)
+            extracted = process_document(md_content)
             outputs[name] = extracted
         except Exception as e:
             print(f"\n[{name}] 提取失败: {e}", flush=True)
@@ -838,11 +982,10 @@ def main(root_str: str):
         for f in folders
         if isinstance(ocr_results[f.name], dict)
     )
-    classify_agent_ = make_agent(CLASSIFY_PROMPT)
     with tqdm(total=total_docs, desc="LLM 提取", unit="文书") as llm_pbar:
         for folder in folders:
             try:
-                extract_folder(folder, ocr_results[folder.name], classify_agent_, llm_pbar)
+                extract_folder(folder, ocr_results[folder.name], llm_pbar)
             except Exception as e:
                 print(f"\n[LLM] {folder.name} 提取失败: {e}", flush=True)
 
