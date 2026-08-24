@@ -240,7 +240,3 @@ mineru_data/
 # 本地环境文件
 .env.local
 .vscode/
-
-# 测试数据文件
-testset/
-extractor_test/ai_review/排查问题总结.md
