@@ -405,7 +405,7 @@ def normalize_value(value, field: str):
 # 6. 数字字段溯源兜底重生成：单值匹配 或 加算(子集和) 复合判定
 # ============================================================
 SUMMED_FIELDS = ["诉讼请求金额", "标的额", "赔偿金"]   # 可能由原文若干金额加算的字段
-CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿", "诉请", "判令", "裁判",
+CLAIM_TRIGGERS = ["诉讼请求", "请求判令", "请求支付", "请求赔偿", "诉请", "诉称", "判令", "裁判",
                   "标的额", "标的金额", "涉案金额", "争议金额",
                   "赔偿金", "赔偿款", "损害赔偿", "赔偿金额"]
 AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度（如 832552.67 → 832552.665）；溯源判定不使用容差
@@ -416,7 +416,7 @@ _NEAREST_TOL_RATIO = 0.2  # 重生成提示“最接近加算值”搜索带宽�
 
 
 @lru_cache(maxsize=8)
-def _source_amount_values(text: str, window: int = 100) -> tuple:
+def _source_amount_values(text: str, window: int = 200) -> tuple:
     """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带金额标记的金额（应加算的部分）。
     触发词覆盖诉讼请求区 / 标的额 / 赔偿金 / 裁判区（与各 skill 字段触发词对齐）；
     返回 ((数值, 原文片段), ...) 按数值去重，每个候选都带金额上下文片段（前 _AMOUNT_CTX_BEFORE / 后 _AMOUNT_CTX_AFTER 字符），

@@ -132,7 +132,7 @@ PDF
 
 ### 3.4 数字字段溯源兜底重生成
 
-- **`_source_amount_values(text, window=100) -> tuple`**（`@lru_cache`）
+- **`_source_amount_values(text, window=200) -> tuple`**（`@lru_cache`）
   从原文抽取金额候选（**含来源片段**）：各 `CLAIM_TRIGGERS` 触发词（诉讼请求区 / 标的额 / 赔偿金 / 裁判区，与各 skill 字段触发词对齐）后 `window` 字符内匹配带金额标记的阿拉伯金额（`AMOUNT_TOKEN_RE`）及**汉字金额**（`_CN_AMOUNT_RE`，须带 `元/人民币/整/角/分`）并解析为数值。返回 `((数值, 原文片段), ...)`，按数值去重；**每个候选都带金额上下文片段**（金额前 `_AMOUNT_CTX_BEFORE=24` / 后 `_AMOUNT_CTX_AFTER=10` 字符），供重生成提示让模型**按多段原文复核**。**仅用于 `_regen_hint` 展示多段原文上下文**；溯源判定与金额还原的候选改用 `_text_number_tokens`（见下）。**按原文缓存**（全文只扫描一次）；返回 `tuple`（不可变，防缓存被改）。
 
 - **`_scale_to_int(vals, target) -> (list[int], int, int, int)`**
