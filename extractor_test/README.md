@@ -156,9 +156,6 @@ PDF
   2. 加算命中：`SUMMED_FIELDS` 中存在全文金额 token 的子集和与目标在容差内 → 用该精确和；
   无对应原文金额时原样返回。
 
-- **`_best_source_snippet(value, text, field, win=16) -> (bool, str)`**
-  溯源调试信息：返回字段值在原文中的 `(是否命中, 原文片段)`。优先定位原文中的原始值/归一化值并截取 ±win 字符上下文；找不到时返回 `(False, 原文片段)`。用于 voter 溯源失败日志。
-
 - **`_regen_hint(fails, cand, text) -> str`**
   为重生成拼接溯源提示：**数字字段**逐字段列出「提取值无法由原文金额验证」、`restore_amount_precision` 还原出的**最接近原文金额**（请模型按此输出）、以及 `_source_amount_values` 返回的**多段原文金额候选及上下文**（**所有候选**都带 `[金额]「原文片段」`，请模型逐段复核后提取；如需加算请按各项之和）；**文本字段**提示「提取值未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充」。
 
@@ -172,7 +169,7 @@ PDF
 
 - **主流程（voter 循环 + 输出包装）**
   1. 判型；`skill_for_doc_type` 命中且需解析时进入提取；
-  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段布尔）；不通过则打印溯源日志（字段值 + 是否命中 + 原文片段，见 `_best_source_snippet`）并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
+  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段布尔）；不通过则打印溯源失败字段并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
   3. `majority_vote` 取众数；
   4. `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度；
   5. 输出 `{字段: {value, 置信度}, 提取说明, 文书类型}`。

@@ -607,29 +607,6 @@ def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
     return "；".join(parts)
 
 
-def _best_source_snippet(value, text: str, field: str, win: int = 16) -> tuple:
-    """溯源调试信息：字段值在原文中的 (是否命中, 原文片段)。
-    - 优先定位原文中的原始值/归一化值，取 ±win 字符上下文
-    - 找不到时返回 (False, 原文片段)"""
-    s = str(value)
-    nt = _provenance_norm(text)
-    nv = _provenance_norm(s)
-    if field in NUMBER_FIELDS:
-        hit = _amount_token_match(_parse_amount(s) if s else None, text)
-    else:
-        hit = bool(nv) and nv in nt
-    raw_idx = text.find(s) if s else -1
-    if raw_idx >= 0:
-        snip = text[max(0, raw_idx - win): raw_idx + len(s) + win]
-    elif nv and nv in nt:
-        i = nt.find(nv)
-        snip = nt[max(0, i - win): i + len(nv) + win]
-    else:
-        i = nt.find(nv[:1]) if nv else -1
-        snip = nt[max(0, i - win): i + win * 2] if i >= 0 else nt[:win * 2]
-    return hit, snip.replace("\n", "⏎")
-
-
 def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
     response = extract_agent_.invoke(
         {"messages": messages},
@@ -728,11 +705,7 @@ def extract_node(state: State) -> dict:
 
     new_fails = provenance_fails(cand, text)
     if new_fails:
-        details = []
-        for f in new_fails:
-            hit, snip = _best_source_snippet(cand.get(f), text, f)
-            details.append(f"{f}={cand.get(f)}（命中 {hit}，原文「{snip}」）")
-        print(f"[voter {voter}] 字段溯源不通过 {'; '.join(details)}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
+        print(f"[voter {voter}] 字段溯源不通过 {new_fails}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
         if attempt < MAX_REGEN:
             # 还有重生成次数：保存候选与失败字段，回到本节点
             return {"cand": cand, "fail_fields": new_fails, "attempt": attempt + 1}
