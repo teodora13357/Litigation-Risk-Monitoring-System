@@ -1,7 +1,7 @@
 # 法律文书解析提取系统架构说明
 
-> 整理时间：2026-08-19
-> 对象：`/Users/olof.chenx2x.net/s4/langchain.ipynb`；`extractor_test/parse_doc.py`、`extractor_test/batch_test.py` 为同逻辑的独立脚本/批处理版本；溯源归一化共用 `scripts/provenance_utils.py`，`batch_eval.py` 对比结果/GT 时先按同一套溯源逻辑归一化再比较
+> 整理时间：2026-08-24
+> 对象：`langchain_reconstructing.ipynb`（langgraph 重构参考）；`extractor_test/parse_doc.py`（独立 langgraph 单文件解析接口）、`extractor_test/batch_test.py`（批测试，与 parse_doc 共用同一 langgraph 流水线逻辑）；溯源归一化共用 `scripts/provenance_utils.py`，`batch_eval.py` 对比结果/GT 时先按同一套溯源逻辑归一化再比较
 
 > 约定：可复用逻辑统一放在 `scripts/`（如 `loader.py`、`provenance_utils.py`），`extractor_test` 内的脚本通过 `sys.path` 引入，避免各脚本重复实现。
 
@@ -14,36 +14,36 @@ PDF
  └─ MinerU 异步解析服务 (BASE_URL /tasks) ──► result(OCR/MD 全文) = query1
                                             │
                             ┌───────────────▼───────────────┐
-                            │ ① 判型  classify_agent        │
-                            │    load_skill(file-type-       │
-                            │      classification)           │
-                            │    输出 文书类型 / 是否需解析    │
+                            │ classify_node（判型）          │
+                            │   load_skill(file-type-        │
+                            │     classification)            │
+                            │   输出 文书类型 / 是否需解析     │
                             └───────────────┬───────────────┘
                                             │ 需解析 & 命中类型
                             ┌───────────────▼───────────────┐
-                            │ ② 提取 × N 次 vote（默认 20） │
-                            │    每个 voter:                 │
-                            │      agent(extract_prompt)     │
-                            │      → align_to_ref(规整字段)  │
-                            │      → provenance_fails(布尔)  │
-                            │         数字:数值匹配/子集和   │
-                            │         文本:归一化后子串包含   │
-                            │      ──不通过──► 日志(命中+    │
-                            │        原文片段) + 带还原值/提示 │
-                            │        提示重生成(≤MAX_REGEN)  │
+                            │ parse_check_node（解析校验）    │
+                            │   skill_for_doc_type → skill   │
                             └───────────────┬───────────────┘
                                             │
                             ┌───────────────▼───────────────┐
-                            │ ③ 投票 majority_vote          │
-                            │    每字段取众数 + 众数出现次数   │
+                            │ extract_node（单 voter，循环）  │
+                            │   agent(extract_prompt)        │
+                            │   → align_to_ref(规整字段)     │
+                            │   → provenance_fails(布尔)     │
+                            │      数字:数值匹配/子集和       │
+                            │      文本:归一化后子串包含       │
+                            │   ──不通过──► _regen_hint 提示  │
+                            │      重生成(≤MAX_REGEN)        │
+                            │   响应非 JSON 时重试一次；       │
+                            │   无有效字段的 voter 不计票      │
                             └───────────────┬───────────────┘
-                                            │
+                                            │ voter == NUM_VOTES
                             ┌───────────────▼───────────────┐
-                            │ ④ 输出包装                    │
-                            │    normalize_value 归一化      │
-                            │    金额字段 restore_amount_    │
-                            │      precision 还原全精度       │
-                            │    置信度 = 众数/N × 100       │
+                            │ collect_node                  │
+                            │   majority_vote 众数           │
+                            │   wrap_extracted 输出包装      │
+                            │   金额 restore_amount_precision│
+                            │   置信度 = 众数/N × 100        │
                             └───────────────┬───────────────┘
                                             ▼
               {字段: {value, 置信度}, 提取说明, 文书类型}
@@ -55,6 +55,7 @@ PDF
 - 数字字段 = `标的额` / `赔偿金` / `诉讼请求金额`（`NUMBER_FIELDS`）
 - 加算字段 = `诉讼请求金额`、`标的额`、`赔偿金`（输出可能是若干原文金额之和，用子集和验证）
 - 重生成由「字段溯源不通过」触发（除 `SKIP_PROVENANCE_FIELDS` 与 `提取说明`）：数字字段走数值精确匹配/子集和，文本字段走归一化（NFKC+去空白+去标点，保留小数点）后子串包含判定
+- 提取响应非 JSON 时先**自动重试一次**；仍失败且候选**无有效字段**（字段全为 null/空）时，该 voter **不计入投票**（置信度分母仍为 `NUM_VOTES`）
 
 ---
 
@@ -67,9 +68,10 @@ PDF
 | `TYPE_TO_SKILL` | 关键词 → skill 目录 映射 | 文书类型关键词匹配提取 skill |
 | `SKILL_FIELDS` | skill → 字段清单 | 各类型可提取字段 |
 | `NUMBER_FIELDS` | `["标的额","赔偿金","诉讼请求金额"]` | 数字字段（溯源/归一化/还原） |
+| `NUM_VOTES` | `20` | 每篇文书 voter 数（置信度分母） |
 | `SKIP_PROVENANCE_FIELDS` | `["应到地点","业务类型","标准案由"]` | 不做溯源的字段（视为通过） |
 | `SUMMED_FIELDS` | `["诉讼请求金额","标的额","赔偿金"]` | 可能由原文若干金额加算的字段 |
-| `CLAIM_TRIGGERS` | 诉讼请求区/标的额/赔偿金/裁判区触发词 | 定位原文金额候选的窗口锚点（与各 skill 字段触发词对齐：`诉讼请求`…、`标的额/标的金额/涉案金额/争议金额`、`赔偿金/赔偿款/损害赔偿/赔偿金额`、`裁判`） |
+| `CLAIM_TRIGGERS` | 金额候选锚点触发词（**示例词表，非穷举**） | 定位原文金额候选的窗口锚点：诉讼请求区（`诉讼请求`/`诉讼请求金额`/`请求判令`/`请求支付`/`请求赔偿`/`诉请`/`诉称`/`请求金额`/`主张金额`/`上诉请求` 等）、标的额区（`标的额`/`诉讼标的额`/`案涉金额`/`争议标的` 等）、赔偿金区（`赔偿金`/`赔偿费用`/`赔付金额` 等）、裁判区 |
 | `DATE_FIELDS` | `["应到时间","立案日期","举证期限"]` | 日期类字段：溯源额外支持年月日数字分组匹配 |
 | `AMOUNT_TOL` | `0.0051` | 金额舍入容差(元)：仅供还原用，溯源判定不用 |
 | `MAX_REGEN` | `2` | 每个 voter 内字段溯源不通过的最大重生成次数 |
@@ -90,11 +92,23 @@ PDF
 - **`make_agent(system_prompt=None)`**
   构建 agent：默认挂 `SkillsMiddleware`（根目录 `prompts/skills`）+ `load_skill` 工具，通过 `system_prompt` 传指令，避免额外 system 消息导致服务端模板报错。
 
+- **`get_agent(system_prompt=None)`**
+  按 `system_prompt` 缓存 agent（`_AGENT_CACHE`），避免每个 voter / 每次重生成重复构建 `create_agent`。
+
 - **`_ref_fields(skill_name) -> list[str]`**
   读该 skill 的 `ref.json`，取正常分支的 `properties` 键并去掉 `提取说明`，得到字段清单（用于规整与校验输出）。**按 skill 名缓存**（`@lru_cache`）：每个进程只读一次磁盘；修改 `ref.json` 后需 `_ref_fields.cache_clear()` 或重启进程。
 
 - **`extract_json(text) -> dict`**
   从模型输出中提取首个合法 JSON 对象：先剥掉 json 代码块围栏（json 或纯文本），再逐 `{` 位置 `raw_decode`，容忍前后夹杂的分析文本。
+
+- **`invoke_classify(classify_agent_, md_content) -> dict`**
+  判型调用：`agent.invoke` 后取最后一条消息并 `extract_json` 解析。
+
+- **`invoke_extract_msgs(extract_agent_, messages) -> dict`**
+  提取调用并解析 JSON；响应非 JSON 时**自动重试一次**，仍失败返回 `{}`（由 `_has_valid_fields` 决定该 voter 是否计票）。
+
+- **`_has_valid_fields(cand) -> bool`**
+  候选是否含至少一个有效提取字段（排除 `提取说明`）；全为 null/空时返回 `False`，对应 voter 不计入 `responses`。
 
 - **`align_to_ref(obj, skill_name) -> dict`**
   把模型输出按 `ref.json` 规整：只保留清单字段，缺失补 `null`；模型输出若已包成 `{value: ...}` 则取 `value`；`提取说明` 原样保留。返回 `{字段: 值}`。
@@ -159,24 +173,27 @@ PDF
 - **`_regen_hint(fails, cand, text) -> str`**
   为重生成拼接溯源提示：**数字字段**逐字段列出「提取值无法由原文金额验证」、`restore_amount_precision` 还原出的**最接近原文金额**（请模型按此输出）、以及 `_source_amount_values` 返回的**多段原文金额候选及上下文**（**所有候选**都带 `[金额]「原文片段」`，请模型逐段复核后提取；如需加算请按各项之和）；**文本字段**提示「提取值未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充」。
 
-### 3.5 Prompt 与主流程
+### 3.5 Prompt 与主流程（langgraph）
 
-- **`CLASSIFY_PROMPT` / `classify_agent`**
-  判型 agent：调用 `file-type-classification` skill，按关键词命中判定文书类型 / 是否需解析 / 判定依据。
+- **`CLASSIFY_PROMPT` / `classify_node`**
+  判型节点：调用 `file-type-classification` skill，按关键词命中判定文书类型 / 是否需解析 / 判定依据。
 
 - **`extract_prompt(fields) -> str`**
   构造提取 agent 指令：先 `load_skill` 读对应 skill，再按「字段清单」严格逐字段提取、填 `提取说明`、只输出 JSON。
 
-- **主流程（voter 循环 + 输出包装）**
-  1. 判型；`skill_for_doc_type` 命中且需解析时进入提取；
-  2. 每个 voter：`extract_agent` 提取 → `align_to_ref` 规整 → `provenance_fails` 判定（全字段布尔）；不通过则打印溯源失败字段并带 `_regen_hint` 提示重生成，最多 `MAX_REGEN` 次；
-  3. `majority_vote` 取众数；
-  4. `normalize_value` 归一化；金额字段经 `restore_amount_precision` 还原全精度；
-  5. 输出 `{字段: {value, 置信度}, 提取说明, 文书类型}`。
+- **`build_graph()`**
+  构建并缓存 langgraph `StateGraph`：`classify → parse_check → extract（单 voter / 重生成循环）→ collect → END`；`classify` / `parse_check` 失败或无需解析时直接产出 `final` 并结束。
+
+- **`process_document(md_content) -> dict`**（parse_doc 单文件接口 / batch_test 批量共用）
+  通过 `build_graph().invoke` 处理单篇文书：
+  1. `classify_node` 判型；`parse_check_node` 按 `skill_for_doc_type` 映射 skill；
+  2. `extract_node` 循环：提取 → `align_to_ref` 规整 → `provenance_fails` 判定；不通过则带 `_regen_hint` 提示重生成（≤ `MAX_REGEN`）；响应非 JSON 自动重试一次；无有效字段的 voter 不计票；
+  3. `collect_node`：`majority_vote` 取众数 → `wrap_extracted` 归一化 + 金额还原 + 置信度；
+  4. 输出 `{字段: {value, 置信度}, 提取说明, 文书类型}`。
 
 ---
 
-## 四、置信度语义：vote vs logprob（重要）
+## 四、置信度语义：vote vs logprob
 
 本系统字段级 `置信度` 使用 **vote（多次采样众数占比）** 计算，`置信度 = 众数出现次数 / N × 100`，语义上度量「**对当前文件的置信度**」——同一文件在不同采样下是否稳定收敛到同一答案。
 
@@ -204,7 +221,7 @@ PDF
 
 ---
 
-## 五、金额字段防舍入与数字形式约定（重要）
+## 五、金额字段防舍入与数字形式约定
 
 - 模型输出金额必须**保留原文全部小数位**：skill 侧硬性约束禁止四舍五入/截取小数（见 `prompts/skills/*/SKILL.md` 与各 `.修改记录.md`）。
 - 模型输出金额**一律为阿拉伯数字**：skill 侧硬性约束禁止输出汉字/大写金额；原文汉字金额先归一化为数字再输出（`二千元` -> `2000`）。
@@ -216,7 +233,7 @@ PDF
 
 ---
 
-## 六、调用整合：全文级计算缓存（性能）
+## 六、调用整合：全文级计算缓存
 
 一份文书的处理含 **20 个 voter × 最多 3 次提取尝试**，多处以**整篇文书全文**为输入的纯计算被反复调用。已用 `functools.lru_cache` 整合，全文级计算每份文书每种只算 1 次：
 
@@ -227,9 +244,10 @@ PDF
 | `_text_number_tokens` | 原文 | `_amount_token_match` / 子集和 / 金额还原每次重复全文扫描+逐 token 解析（含汉字金额） | 1 次 |
 | `_digit_groups` | 输入字符串 | 日期溯源每次全文 `\d+` 扫描 | 1 次 |
 | `_ref_fields` | skill 名 | 60 次读 `ref.json`+JSON 解析 | 每 skill 1 次 |
+| `_AGENT_CACHE` | system_prompt | 每个 voter / 每次重生成重复 `create_agent` | 每 prompt 1 次 |
 
 注意事项：
 
 - **返回类型**：`_source_amount_values` / `_digit_groups` 改为返回 `tuple`（不可变，防止调用方改动污染缓存）。
 - **热更新**：`_ref_fields` 按 skill 名缓存，**修改 `ref.json` 后需 `_ref_fields.cache_clear()` 或重启进程**；`load_skill`（读 `SKILL.md`）**不缓存**，改 prompt 即时生效。
-- 缓存随进程生命周期常驻，`batch_test.py` / `parse_doc.py` 每次运行即新进程，天然干净；`langchain.ipynb` 同一内核反复运行时，改 `ref.json` 后请手动 `_ref_fields.cache_clear()`。
+- 缓存随进程生命周期常驻，`batch_test.py` / `parse_doc.py` 每次运行即新进程，天然干净；`langchain_reconstructing.ipynb` 同一内核反复运行时，改 `ref.json` 后请手动 `_ref_fields.cache_clear()`。

@@ -675,18 +675,35 @@ def invoke_classify(classify_agent_, md_content: str) -> dict:
 
 
 def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
-    response = extract_agent_.invoke(
-        {"messages": messages},
-        config={"configurable": {"thread_id": str(uuid7())}},
-    )
-    content = response.get("messages", [])[-1].content
-    try:
-        return extract_json(content)
-    except ValueError as e:
-        # 模型偶发输出纯分析文本（非 JSON），此时按空对象继续，避免整篇文书失败；
-        # 空对象会被 align_to_ref 补成全 null，并让溯源跳过 null 字段。
-        print(f"  [警告] 提取响应未包含 JSON，按空对象处理: {e}", flush=True)
-        return {}
+    """调用提取 agent 并解析 JSON；响应非 JSON 时重试一次，仍失败返回 {}。
+    返回 {} 会被 align_to_ref 补成全 null，由 extract_node 判断该 voter 是否计入投票。"""
+    for attempt in range(2):
+        response = extract_agent_.invoke(
+            {"messages": messages},
+            config={"configurable": {"thread_id": str(uuid7())}},
+        )
+        content = response.get("messages", [])[-1].content
+        try:
+            return extract_json(content)
+        except ValueError as e:
+            print(f"  [警告] 第 {attempt + 1} 次提取响应未包含 JSON: {e}", flush=True)
+    return {}
+
+
+def _has_valid_fields(cand: dict) -> bool:
+    """候选是否含至少一个有效提取字段（排除 提取说明）；无有效字段时该 voter 不计入投票。"""
+    for f, v in cand.items():
+        if f == "提取说明":
+            continue
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple, dict)):
+            if len(v) > 0:
+                return True
+            continue
+        if str(v).strip():
+            return True
+    return False
 
 
 def classify_node(state: State) -> dict:
@@ -761,14 +778,14 @@ def extract_node(state: State) -> dict:
             # 还有重生成次数：保存候选与失败字段，回到本节点
             return {"cand": cand, "fail_fields": new_fails, "attempt": attempt + 1}
 
-    # 溯源通过或次数耗尽：本 voter 收尾，结果入 responses
+    # 溯源通过或次数耗尽：本 voter 收尾；有有效字段才计入 responses（无有效字段的 voter 不参与投票）
     next_voter = voter + 1
     return {
         "voter": next_voter,
         "attempt": 0,
         "cand": {},
         "fail_fields": [],
-        "responses": [cand],
+        "responses": [cand] if _has_valid_fields(cand) else [],
         "done": next_voter >= NUM_VOTES,
     }
 
