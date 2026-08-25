@@ -1,0 +1,934 @@
+"""LLM 字段解析独立脚本：处理 ocr_split.py 生成的 .md 文书。
+
+用法:
+    python scripts/llm_parse.py <输入路径> [--out <输出目录>]
+
+- 输入路径:
+    * ocr_split 输出根目录（优先按各案件 manifest.json 中 format=md 的条目处理）
+    * 单个案件目录
+    * 单个 .md 文件
+- 输出:
+    * 目录输入 -> <out>/llm_results.json（默认写到输入目录）
+    * 单文件输入 -> <文件同目录>/llm_results.json
+
+本脚本只做「按文件名类型加载 skill -> 多 voter 提取 -> 溯源重生成 -> 投票收尾」，
+不负责 OCR，也不重新判型；OCR 文本由 ocr_split.py 提前生成并保存为 md，文件名携带文书类型。
+"""
+
+import argparse
+import json
+import os
+import re
+import sys
+from decimal import Decimal, ROUND_CEILING
+from functools import lru_cache
+from operator import add
+from pathlib import Path
+from typing import Annotated, TypedDict
+
+from langchain.tools import tool
+from langchain_openai import ChatOpenAI
+from langchain.agents import create_agent
+from langchain_core.utils.uuid import uuid7
+from langgraph.graph import StateGraph, START, END
+from deepagents.middleware import SkillsMiddleware
+from deepagents.backends.filesystem import FilesystemBackend
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import loader
+from provenance_utils import _provenance_norm, _text_provenance_ok
+
+# 内网/本机调用不走代理，避免 VPN 影响
+os.environ.setdefault("NO_PROXY", "192.168.10.250,127.0.0.1,localhost")
+os.environ.setdefault("no_proxy", os.environ["NO_PROXY"])
+
+LLM_BASE = "http://192.168.10.250:8006"
+
+SKILLS_ROOT = loader.SKILLS_ROOT
+
+
+def skill_for_doc_type(doc_type: str):
+    return loader.skill_for_doc_type(doc_type)
+
+
+def load_skill(skill_name: str) -> str:
+    return loader.load_skill(skill_name)
+
+
+load_skill.__doc__ = loader.available_skills_docstring()
+load_skill = tool(load_skill)
+
+
+def build_model():
+    return ChatOpenAI(
+        base_url=LLM_BASE,
+        api_key="None",
+        model="Qwen3.6-27B",
+        max_tokens=None,
+        temperature=0.1,
+        top_p=0.9,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+
+
+def make_agent(system_prompt: str | None = None):
+    """构建带默认 SkillsMiddleware + load_skill 工具的 agent（渐进披露，纯文本 JSON 输出）。
+    通过 system_prompt 传指令，避免额外 system 消息导致服务端模板报错。"""
+    backend = FilesystemBackend(root_dir=str(SKILLS_ROOT))
+    middleware = SkillsMiddleware(backend=backend, sources=["."])
+    return create_agent(
+        build_model(),
+        middleware=[middleware],
+        tools=[load_skill],
+        system_prompt=system_prompt,
+    )
+
+
+_AGENT_CACHE: dict[str, object] = {}
+
+
+def get_agent(system_prompt: str | None = None):
+    """按 system_prompt 缓存 agent，避免每个 voter/每次重生成重复构建 create_agent。"""
+    key = system_prompt or ""
+    agent = _AGENT_CACHE.get(key)
+    if agent is None:
+        agent = make_agent(system_prompt)
+        _AGENT_CACHE[key] = agent
+    return agent
+
+
+NUM_VOTES = 20  # 与 batch_test.py / parse_doc.py 对齐：每篇文书投票数
+
+
+def _ref_fields(skill_name: str) -> list[str]:
+    return loader.skill_fields(skill_name)
+
+
+def extract_json(text: str) -> dict:
+    """从模型输出中提取 JSON 对象（可容忍前后夹杂的分析文本）。"""
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(text).strip(), flags=re.S)
+    decoder = json.JSONDecoder()
+    for m in re.finditer(r"\{", text):
+        try:
+            obj, _ = decoder.raw_decode(text[m.start():])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+    raise ValueError(f"响应中未找到 JSON: {text[:200]}")
+
+
+def align_to_ref(obj: dict, skill_name: str) -> dict:
+    """把模型输出按 ref.json 规整：只保留清单字段，缺失补 null，返回 {字段: 值}。
+    模型输出若已包成 {value: ...} 则取其 value。"""
+    fields = _ref_fields(skill_name)
+    out = {}
+    for f in fields:
+        raw = obj.get(f)
+        if isinstance(raw, dict) and "value" in raw:
+            raw = raw["value"]
+        out[f] = raw
+    notes = obj.get("提取说明")
+    if isinstance(notes, dict):
+        out["提取说明"] = notes
+    return out
+
+
+def majority_vote(results):
+    """对多次生成结果逐字段取众数（支持 list/dict 值，平局保留最先出现）。
+    返回 (众数结果 dict, 每字段众数出现次数 dict)。"""
+    if not results:
+        return {}, {}
+    keys = []
+    for r in results:
+        for k in r:
+            if k not in keys:
+                keys.append(k)
+    merged = {}
+    counts = {}
+    for k in keys:
+        cc = {}
+        first = {}
+        for x in [r.get(k) for r in results]:
+            key = json.dumps(x, ensure_ascii=False, sort_keys=True, default=str)
+            if key not in first:
+                first[key] = x
+            cc[key] = cc.get(key, 0) + 1
+        best = max(cc, key=cc.get)
+        merged[k], counts[k] = first[best], cc[best]
+    return merged, counts
+
+
+# ============================================================
+# 溯源：全字段布尔判定（源头=文书原文，输出=字段值）
+# ============================================================
+NUMBER_FIELDS = ["标的额", "赔偿金", "诉讼请求金额"]
+SKIP_PROVENANCE_FIELDS = ["应到地点", "业务类型", "标准案由"]  # 这些字段不做溯源（视为通过）
+
+
+# 汉字数字/单位映射（含大写），用于把原文汉字金额归一化为数字
+_CN_DIGITS = {
+    "零": 0, "〇": 0, "○": 0,
+    "一": 1, "壹": 1, "二": 2, "贰": 2, "两": 2, "三": 3, "叁": 3,
+    "四": 4, "肆": 4, "五": 5, "伍": 5, "六": 6, "陆": 6, "七": 7,
+    "柒": 7, "八": 8, "捌": 8, "九": 9, "玖": 9,
+}
+_CN_UNITS = {
+    "十": 10, "拾": 10, "百": 100, "佰": 100, "千": 1000, "仟": 1000,
+}
+_CN_BIG_UNITS = {"万": 10000, "萬": 10000, "亿": 100000000, "億": 100000000}
+_CN_SCALE_CHARS = "十百千万亿拾佰仟萬億"
+_CN_FRAC_DIGITS = "零〇○一二两三四五六七八九壹贰叁肆伍陆柒捌玖"
+
+
+def _money_result(total: float, frac: float):
+    """整数元部分 + 角/分小数合并为数值；整数金额返回 int，带小数返回 float。"""
+    val = total + round(frac, 2)
+    return int(val) if val == int(val) else val
+
+
+def _cn_amount(s: str):
+    """汉字金额串 → 数值（如 二千→2000、贰仟元→2000、两万→20000、一万零三百→10300、十万→100000；
+    壹仟贰佰叁拾肆元伍角陆分→1234.56、伍角→0.5、三分→0.03）。
+    仅当串含数量级单位（十/百/千/万/亿）或带 元/人民币/整/角/分 标记时才判定为金额，避免误识别日期等；
+    解析失败返回 None。"""
+    t = (s or "").strip()
+    if not t:
+        return None
+    had_money_marker = False
+    if t.startswith("人民币"):
+        had_money_marker = True
+        t = t[len("人民币"):].strip()
+    # 先剥离尾部 分/角/元/人民币/整，并累加 角/分 小数
+    frac = 0.0
+    changed = True
+    while changed and t:
+        changed = False
+        if t.endswith("分"):
+            m = re.search(rf"([{_CN_FRAC_DIGITS}])分$", t)
+            if not m:
+                return None
+            frac += _CN_DIGITS[m.group(1)] * 0.01
+            t = t[: m.start()].strip()
+            had_money_marker = True
+            changed = True
+        elif t.endswith("角"):
+            m = re.search(rf"([{_CN_FRAC_DIGITS}])角$", t)
+            if not m:
+                return None
+            frac += _CN_DIGITS[m.group(1)] * 0.1
+            t = t[: m.start()].strip()
+            had_money_marker = True
+            changed = True
+        else:
+            for suf in ("元", "人民币", "整"):
+                if t.endswith(suf):
+                    t = t[: -len(suf)].strip()
+                    had_money_marker = True
+                    changed = True
+                    break
+    if not t:
+        return _money_result(0, frac) if frac > 0 else None
+    if not any(c in _CN_SCALE_CHARS for c in t) and not had_money_marker:
+        return None
+    total = 0
+    section = 0
+    number = 0
+    for ch in t:
+        if ch in _CN_DIGITS:
+            number = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            if number == 0:
+                number = 1  # 十/百/千 前无数时按 1（如 十五、十万）
+            section += number * _CN_UNITS[ch]
+            number = 0
+        elif ch in _CN_BIG_UNITS:
+            section = (section + number) * _CN_BIG_UNITS[ch]
+            total += section
+            section = 0
+            number = 0
+        else:
+            return None
+    total += section + number
+    if total <= 0 and frac <= 0:
+        return None
+    return _money_result(total, frac)
+
+
+# 汉字金额 token 正则（原文扫描用）：中文数字串 + 可选 元/人民币/整 + 可选 角/分 小数
+_CN_AMOUNT_RE = re.compile(
+    rf"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]+"
+    rf"(?:\s*(?:元|人民币|整))?"
+    rf"(?:[{_CN_FRAC_DIGITS}]+\s*角)?"
+    rf"(?:[{_CN_FRAC_DIGITS}]+\s*分)?"
+)
+
+
+def _has_money_marker(s: str) -> bool:
+    """金额标记（元/人民币/整/角/分）：原文扫描时排除日期、法条、期限等非金额汉字数字。"""
+    return any(m in s for m in ("元", "人民币", "整", "角", "分"))
+
+
+# 阿拉伯金额正则：货币符号/人民币前缀 + 数字 + 单位（带金额标记才算金额，排除年份/案号/日期）
+AMOUNT_TOKEN_RE = r"(?:人民币|￥|¥)?\d[\d，,．.]*\s*(?:亿元|万元|元|人民币|￥|¥)"
+
+
+@lru_cache(maxsize=8)
+def _text_number_tokens(text: str) -> tuple:
+    """原文中的金额 token 数值列表（含 万元/亿元 换算、汉字金额归一化与角/分小数）。
+    只认带金额标记的数字：阿拉伯数字须带单位/货币符号，汉字金额须带 元/人民币/整/角/分，
+    排除年份、案号、日期、法条、期限等非金额数字。按原文缓存。"""
+    out = []
+    for m in re.finditer(AMOUNT_TOKEN_RE, text):
+        v = _parse_amount(m.group(0))
+        if v is not None:
+            out.append(v)
+    for m in _CN_AMOUNT_RE.finditer(text):
+        tok = m.group(0)
+        if not _has_money_marker(tok):
+            continue
+        v = _parse_amount(tok)
+        if v is not None:
+            out.append(v)
+    return tuple(out)
+
+
+def _amount_token_match(target, text: str) -> bool:
+    """目标金额是否与原文某个金额 token 数值相等（含 万元/亿元 换算、汉字金额归一化与角/分，
+    如 80000 可匹配 "8万元"、2000 可匹配 "二千元"）。"""
+    if target is None:
+        return False
+    return any(parsed == target for parsed in _text_number_tokens(text))
+
+
+def _parse_amount(s):
+    """金额串 → 数值(元)：汉字金额（二千/贰仟/两万/一万零三百）先归一化为数字；
+    阿拉伯数字支持 万元×10000、亿元×1亿、去千分位/单位/全角数字；保留小数（整数金额返回 int）。"""
+    if s is None:
+        return None
+    t = str(s).replace("，", ",").replace(" ", "").replace("　", "")
+    # 全角数字/字母转半角
+    t = "".join(chr(ord(ch) - 0xFEE0) if "０" <= ch <= "９" else ch for ch in t)
+    # 汉字金额：交给 _cn_amount（内部处理 元/人民币/整 后缀与 万/亿 单位）；解析失败则回落阿拉伯路径
+    if re.search(r"[零〇○一二两三四五六七八九十百千万亿壹贰叁肆伍陆柒捌玖拾佰仟萬億]", t):
+        cn = _cn_amount(t)
+        if cn is not None:
+            return cn
+    mult = 1
+    if t.endswith("亿元"):
+        mult = 100000000
+    elif t.endswith("万元"):
+        mult = 10000
+    for unit in ["亿元", "万元", "元", "人民币", "￥", "¥", "约", "共", "整"]:
+        t = t.replace(unit, "")
+    t = t.replace(",", "")
+    try:
+        val = float(t) * mult
+    except (TypeError, ValueError):
+        return None
+    return int(val) if val == int(val) else val
+
+
+def normalize_value(value, field: str):
+    """字段值归一化：number 字段统一转为数值(元)，复用 _parse_amount；
+    非 number 字段原样返回。"""
+    if field not in NUMBER_FIELDS:
+        return value
+    if isinstance(value, dict):
+        if "value" in value:
+            return normalize_value(value["value"], field)
+        return value
+    if isinstance(value, (list, tuple)):
+        return [normalize_value(v, field) for v in value]
+    if value is None:
+        return None
+    if not str(value).strip():
+        return value
+    parsed = _parse_amount(value)
+    return parsed if parsed is not None else value
+
+
+# ============================================================
+# 数字字段溯源兜底重生成：单值匹配 或 加算(子集和) 复合判定
+# ============================================================
+SUMMED_FIELDS = ["诉讼请求金额", "标的额", "赔偿金"]   # 可能由原文若干金额加算的字段
+CLAIM_TRIGGERS = ["诉讼请求", "诉讼请求金额", "请求判令", "请求支付", "请求赔偿", "诉请", "诉称",
+                  "请求金额", "诉请金额", "请求的金额", "主张金额", "要求支付", "要求赔偿",
+                  "诉求金额", "请求数额", "上诉请求", "判令", "裁判",
+                  "标的额", "标的金额", "涉案金额", "争议金额", "诉讼标的额", "诉讼标的",
+                  "标的款", "标的数额", "案涉金额", "争议标的", "诉争金额", "涉诉金额", "案件标的额",
+                  "赔偿金", "赔偿款", "损害赔偿", "赔偿金额", "赔偿费用", "赔付款", "赔付金额",
+                  "损失赔偿", "赔偿数额", "赔付数额"]
+AMOUNT_TOL = 0.0051  # 金额舍入容差(元)：仅供 restore_amount_precision 将模型四舍五入的值还原为原文全精度
+MAX_REGEN = 2      # 每个 voter 内字段溯源不通过的最大重生成次数
+_AMOUNT_CTX_BEFORE = 24  # 候选金额上下文：金额前文长度（字符）
+_AMOUNT_CTX_AFTER = 10   # 候选金额上下文：金额后文长度（字符）
+_NEAREST_TOL_RATIO = 0.2  # 重生成提示“最接近加算值”搜索带宽：相对提取值的比例（0.2 = ±20%）
+
+
+@lru_cache(maxsize=8)
+def _source_amount_values(text: str, window: int = 200) -> tuple:
+    """原文金额候选（含来源片段）：各 CLAIM_TRIGGERS 触发词后 window 字符内带金额标记的金额（应加算的部分）。
+    触发词覆盖诉讼请求区 / 标的额 / 赔偿金 / 裁判区（与各 skill 字段触发词对齐）；
+    返回 ((数值, 原文片段), ...) 按数值去重，每个候选都带金额上下文片段。
+    仅用于 _regen_hint 展示多段原文上下文；
+    溯源判定与金额还原用 _text_number_tokens（全文、保留重复金额）。"""
+    vals = []
+    seen = set()
+    for trig in CLAIM_TRIGGERS:
+        for m in re.finditer(re.escape(trig), text):
+            base = m.end()
+            seg = text[base: base + window]
+            for am in re.finditer(AMOUNT_TOKEN_RE, seg):
+                v = _parse_amount(am.group(0))
+                if v is None or v <= 0 or v in seen:
+                    continue
+                seen.add(v)
+                abs_start = base + am.start()
+                abs_end = base + am.end()
+                ctx = text[max(0, abs_start - _AMOUNT_CTX_BEFORE): abs_end + _AMOUNT_CTX_AFTER]
+                vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
+            for am in _CN_AMOUNT_RE.finditer(seg):
+                tok = am.group(0)
+                if not _has_money_marker(tok):
+                    continue
+                v = _parse_amount(tok)
+                if v is None or v <= 0 or v in seen:
+                    continue
+                seen.add(v)
+                abs_start = base + am.start()
+                abs_end = base + am.end()
+                ctx = text[max(0, abs_start - _AMOUNT_CTX_BEFORE): abs_end + _AMOUNT_CTX_AFTER]
+                vals.append((v, ctx.replace("\n", "⏎").replace("\r", "")))
+    return tuple(vals)
+
+
+def _scale_to_int(vals, target):
+    """按候选与目标的最大小数位数求缩放，把元金额转成整数（保留全部小数）。
+    用 Decimal 精确缩放，不做四舍五入。"""
+    maxdp = 0
+    for x in list(vals) + [target]:
+        s = f"{Decimal(str(x)):.10f}".rstrip("0")
+        if "." in s:
+            maxdp = max(maxdp, len(s.split(".")[1]))
+    scale = 10 ** maxdp
+
+    def _to_int(x):
+        return int(Decimal(str(x)) * scale)  # scale 覆盖全部小数位，int 截断即精确
+
+    # 仅当原文金额带小数时才允许舍入容差（整数金额无舍入问题）
+    tol_int = 0 if maxdp == 0 else int((Decimal(str(AMOUNT_TOL)) * scale).to_integral_value(rounding=ROUND_CEILING))
+    return [_to_int(x) for x in vals], _to_int(target), scale, tol_int
+
+
+def _subset_sum_possible(vals, target, tol, max_terms: int = 12) -> bool:
+    """vals 中是否存在不超过 max_terms 项之和与 target 相差 <= tol（正数，降序+前缀和剪枝回溯）。"""
+    if target <= 0:
+        return False
+    hi = target + tol
+    vals = sorted((v for v in vals if 0 < v <= hi), reverse=True)
+    n = len(vals)
+    prefix = [0] * (n + 1)
+    for i in range(n):
+        prefix[i + 1] = prefix[i] + vals[i]
+    if prefix[n] < target - tol:
+        return False
+
+    def dfs(idx, remaining, terms):
+        if remaining <= tol:
+            return True
+        if terms >= max_terms or idx >= n:
+            return False
+        if vals[idx] > remaining:
+            return dfs(idx + 1, remaining, terms)
+        if prefix[n] - prefix[idx] < remaining - tol:
+            return False
+        if dfs(idx + 1, remaining - vals[idx], terms + 1):
+            return True
+        return dfs(idx + 1, remaining, terms)
+
+    return dfs(0, target, 0)
+
+
+def provenance_fails(cand: dict, text: str) -> list[str]:
+    """全字段溯源复合判定（除 SKIP_PROVENANCE_FIELDS 与 提取说明），返回未通过、需重生成的字段列表：
+    - 数字字段：数值与原文某金额 token 精确相等（含 万元/亿元 换算、汉字金额归一化与角/分）；或字段∈SUMMED_FIELDS 且值等于全文金额 token 的子集和（精确）
+    - 文本字段：NFKC+去空白归一化后为原文子串（日期类字段支持年月日数字匹配）
+    - 文本字段 null/空/无法归一化跳过（视为通过）；数字字段非空但无法解析视为不通过（触发重生成）"""
+    amount_tokens = _text_number_tokens(text)
+    nt = _provenance_norm(text)
+    fails = []
+    for f, v in cand.items():
+        if f == "提取说明" or f in SKIP_PROVENANCE_FIELDS:
+            continue
+        if v is None or v == "":
+            continue
+        if f in NUMBER_FIELDS:
+            if isinstance(v, (int, float)):
+                target = v  # 保留小数，不截断
+            else:
+                parsed = _parse_amount(v)
+                if parsed is None:
+                    fails.append(f)
+                    continue
+                target = parsed
+            # 1) 单值精确匹配（数值相等，含 万元/亿元 换算）
+            if _amount_token_match(target, text):
+                continue
+            # 2) 加算：子集和（候选=全文金额 token，保留重复金额，按最大小数位缩放为整数后精确比较）
+            if f in SUMMED_FIELDS:
+                ints, itarget, _, _ = _scale_to_int(amount_tokens, target)
+                if _subset_sum_possible(ints, itarget, 0):
+                    continue
+            fails.append(f)
+            continue
+        if not _text_provenance_ok(v, text, f, nt):
+            fails.append(f)
+    return fails
+
+
+def _subset_sum_value(vals, target, tol, max_terms: int = 12):
+    """存在子集和与 target 相差 <= tol 时，返回该精确子集和（缩放整数）；否则 None。"""
+    if target <= 0:
+        return None
+    lo, hi = target - tol, target + tol
+    cand = sorted((v for v in vals if 0 < v <= hi), reverse=True)
+    n = len(cand)
+    prefix = [0] * (n + 1)
+    for i in range(n):
+        prefix[i + 1] = prefix[i] + cand[i]
+    if prefix[n] < lo:
+        return None
+    best = [None]
+
+    def dfs(idx, s, terms):
+        if best[0] is not None:
+            return
+        if lo <= s <= hi:
+            best[0] = s
+            return
+        if terms >= max_terms or idx >= n:
+            return
+        if prefix[n] - prefix[idx] < lo - s:
+            return
+        if s + cand[idx] <= hi:
+            dfs(idx + 1, s + cand[idx], terms + 1)
+            if best[0] is not None:
+                return
+        dfs(idx + 1, s, terms)
+
+    dfs(0, 0, 0)
+    return best[0]
+
+
+def _nearest_subset_sum(vals, target, max_terms: int = 12):
+    """返回与 target 距离最近的不超过 max_terms 项子集和（缩放整数）；超过 ±20% 带宽或无法组成时返回 None。
+    二分最小容差 + _subset_sum_value 剪枝回溯，避免全组合枚举。"""
+    vals = sorted((v for v in vals if v > 0), reverse=True)
+    if not vals or target <= 0:
+        return None
+    hi = max(1, int(target * _NEAREST_TOL_RATIO))
+    if _subset_sum_value(vals, target, hi, max_terms) is None:
+        return None
+    lo = 0
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if _subset_sum_value(vals, target, mid, max_terms) is not None:
+            hi = mid
+        else:
+            lo = mid + 1
+    return _subset_sum_value(vals, target, lo, max_terms)
+
+
+def restore_amount_precision(value, text: str, field: str):
+    """把被模型四舍五入的金额字段值还原为原文的全精度值；
+    候选=全文金额 token（保留重复金额，与 provenance_fails 一致）；无对应原文金额时原样返回。"""
+    if value is None:
+        return value
+    target = value if isinstance(value, (int, float)) else _parse_amount(value)
+    if target is None:
+        return value
+    amount_tokens = _text_number_tokens(text)
+    if not amount_tokens:
+        return value
+    # 1) 直接命中：与原文某金额在舍入容差内 → 用原文全精度
+    best = min(amount_tokens, key=lambda c: abs(c - target))
+    if abs(best - target) <= AMOUNT_TOL:
+        return best
+    # 2) 加算命中：某子集和与 target 在容差内 → 用该子集精确和（全精度）
+    if field in SUMMED_FIELDS:
+        ints, itarget, scale, tol_int = _scale_to_int(amount_tokens, target)
+        s = _subset_sum_value(ints, itarget, tol_int)
+        if s is not None:
+            val = s / scale
+            return int(val) if val == int(val) else val
+    return value
+
+
+def _regen_hint(fails: list[str], cand: dict, text: str) -> str:
+    """为重生成拼接溯源提示：数字字段给出还原金额，并按多段原文片段让模型复核；
+    文本字段提示严格按原文提取。"""
+    cands = _source_amount_values(text)
+    segs = "；".join(f"[{v}元]「{ctx}」" for v, ctx in cands)
+    parts = []
+    for f in fails:
+        v = cand.get(f)
+        if f in NUMBER_FIELDS:
+            hint = f"{f} 的提取值 {v} 无法由原文金额验证"
+            restored = restore_amount_precision(v, text, f) if v is not None and str(v).strip() else None
+            if restored is not None and str(restored) != str(v):
+                hint += f"，请按原文还原值 {restored}元 输出"
+            if f in SUMMED_FIELDS and v is not None and str(v).strip():
+                target = v if isinstance(v, (int, float)) else _parse_amount(v)
+                if target is not None:
+                    ints, itarget, scale, _ = _scale_to_int(_text_number_tokens(text), target)
+                    near = _nearest_subset_sum(ints, itarget)
+                    if near is not None and near != itarget:
+                        val = near / scale
+                        val = int(val) if val == int(val) else val
+                        hint += f"；原文金额可加算出的最接近值为 {val}元，请核对是否为正确答案"
+            if segs:
+                hint += f"（原文金额候选及上下文，请逐段复核后提取：{segs}；如需加算请按各项之和）"
+        else:
+            hint = f"{f} 的提取值 {v} 未能在原文中找到对应内容，请严格按原文提取：只输出原文中明确出现的值，不得改写、推断或补充"
+        parts.append(hint)
+    return "；".join(parts)
+
+
+def invoke_extract_msgs(extract_agent_, messages: list) -> dict:
+    """调用提取 agent 并解析 JSON；响应非 JSON 时重试一次，仍失败返回 {}。
+    返回 {} 会被 align_to_ref 补成全 null，由 extract_node 判断该 voter 是否计入投票。"""
+    for attempt in range(2):
+        response = extract_agent_.invoke(
+            {"messages": messages},
+            config={"configurable": {"thread_id": str(uuid7())}},
+        )
+        content = response.get("messages", [])[-1].content
+        try:
+            return extract_json(content)
+        except ValueError as e:
+            print(f"  [警告] 第 {attempt + 1} 次提取响应未包含 JSON: {e}", flush=True)
+    return {}
+
+
+def _has_valid_fields(cand: dict) -> bool:
+    """候选是否含至少一个有效提取字段（排除 提取说明）；无有效字段时该 voter 不计入投票。"""
+    for f, v in cand.items():
+        if f == "提取说明":
+            continue
+        if v is None:
+            continue
+        if isinstance(v, (list, tuple, dict)):
+            if len(v) > 0:
+                return True
+            continue
+        if str(v).strip():
+            return True
+    return False
+
+
+class State(TypedDict):
+    doc: str
+    runnable: bool
+    cls_result: dict
+    need_parse: bool
+    doc_type: str
+    skill_name: str
+    voter: int
+    attempt: int
+    cand: dict
+    fail_fields: list
+    responses: Annotated[list, add]
+    done: bool
+    final: dict
+
+
+def parse_check_node(state: State) -> dict:
+    """解析校验节点：根据文件名已确定的文书类型映射提取 skill；无匹配 skill 时直接产出 final。"""
+    if not state.get("need_parse"):
+        return {"runnable": False, "final": state.get("cls_result") or {}}
+    skill_name = skill_for_doc_type(state["doc_type"])
+    if skill_name is None:
+        return {
+            "runnable": False,
+            "final": {"文书类型": state["doc_type"], "提取说明": {"错误": f"无对应提取 skill: {state['doc_type']}"}},
+        }
+    return {"runnable": True, "skill_name": skill_name}
+
+
+def extract_node(state: State) -> dict:
+    """单个 voter 提取节点：与 batch_test.extract_node 等价的状态机版本。
+    每 voter 最多 MAX_REGEN+1 次尝试；失败字段单独存 fail_fields，重生成只提取失败字段并合并；
+    溯源通过或次数耗尽后把最终候选 append 进 responses，并推进 voter。"""
+    text = state["doc"]
+    skill_name = state["skill_name"]
+    voter = state["voter"]
+    attempt = state["attempt"]
+    cand = dict(state.get("cand") or {})
+    fails = list(state.get("fail_fields") or [])
+
+    if attempt > 0 and fails:
+        hint = _regen_hint(fails, cand, text)
+        print(f"  → 溯源提示：{hint}", flush=True)
+        if all(f in NUMBER_FIELDS for f in fails):
+            # 全是数字字段失败：只发备选数字+上下文片段，不再带完整原文
+            msgs = [("user", f"溯源提示：{hint}。请重新提取。")]
+        else:
+            # 含文本字段失败：仍须带完整原文（文本字段提示不含原文片段）
+            msgs = [("user", text), ("user", f"溯源提示：{hint}。请重新提取。")]
+        fields = fails          # 只重生成失败字段
+    else:
+        msgs = [("user", text)]
+        fields = loader.skill_fields(skill_name)
+
+    cand_new = align_to_ref(invoke_extract_msgs(get_agent(extract_prompt(fields)), msgs), skill_name)
+    if attempt > 0 and fails:
+        # 合并：只更新失败字段，保留已通过字段
+        for f in fails:
+            cand[f] = cand_new[f]
+        if "提取说明" in cand_new:
+            old_notes = cand.get("提取说明")
+            cand["提取说明"] = {**(old_notes if isinstance(old_notes, dict) else {}), **cand_new["提取说明"]}
+    else:
+        cand = cand_new
+
+    new_fails = provenance_fails(cand, text)
+    if new_fails:
+        print(f"[voter {voter}] 字段溯源不通过 {new_fails}，重生成 {attempt+1}/{MAX_REGEN+1}", flush=True)
+        if attempt < MAX_REGEN:
+            # 还有重生成次数：保存候选与失败字段，回到本节点
+            return {"cand": cand, "fail_fields": new_fails, "attempt": attempt + 1}
+
+    # 溯源通过或次数耗尽：本 voter 收尾；有有效字段才计入 responses（无有效字段的 voter 不参与投票）
+    next_voter = voter + 1
+    return {
+        "voter": next_voter,
+        "attempt": 0,
+        "cand": {},
+        "fail_fields": [],
+        "responses": [cand] if _has_valid_fields(cand) else [],
+        "done": next_voter >= NUM_VOTES,
+    }
+
+
+def collect_node(state: State) -> dict:
+    """收集节点：多数投票并包装最终输出。"""
+    extracted, counts = majority_vote(state["responses"])
+    return {"final": wrap_extracted(extracted, counts, state["doc"], state["doc_type"], NUM_VOTES)}
+
+
+def route_after_parse(state: State) -> str:
+    return "extract" if state.get("runnable") else "end"
+
+
+def route_after_extract(state: State) -> str:
+    return "collect" if state.get("done") else "extract"
+
+
+_pipeline_graph = None
+
+
+def build_graph():
+    """构建并缓存 langgraph 解析校验→多 voter 提取→投票收尾流水线。
+
+    入口处不调用判型模型：文书类型由 ocr_split 输出的 md 文件名携带。
+    """
+    global _pipeline_graph
+    if _pipeline_graph is not None:
+        return _pipeline_graph
+    graph = StateGraph(State)
+    graph.add_node("parse_check", parse_check_node)
+    graph.add_node("extract", extract_node)
+    graph.add_node("collect", collect_node)
+    graph.add_edge(START, "parse_check")
+    graph.add_conditional_edges(
+        "parse_check",
+        route_after_parse,
+        {"extract": "extract", "end": END},
+    )
+    graph.add_conditional_edges(
+        "extract",
+        route_after_extract,
+        {"collect": "collect", "extract": "extract"},
+    )
+    graph.add_edge("collect", END)
+    _pipeline_graph = graph.compile()
+    return _pipeline_graph
+
+
+def process_document(md_content: str, doc_type: str) -> dict:
+    """通过 langgraph 流水线处理单篇文书：解析校验→多 voter 提取→投票收尾。
+
+    文书类型直接来自 ocr_split 生成的 md 文件名，不再调用判型模型。
+    """
+    state = build_graph().invoke({
+        "doc": md_content,
+        "runnable": False,
+        "cls_result": {},
+        "need_parse": True,
+        "doc_type": doc_type,
+        "skill_name": "",
+        "voter": 0,
+        "attempt": 0,
+        "cand": {},
+        "fail_fields": [],
+        "responses": [],
+        "done": False,
+        "final": {},
+    })
+    return state.get("final") or {}
+
+
+def wrap_extracted(extracted: dict, counts: dict, text: str, doc_type: str, total_votes: int) -> dict:
+    """最终输出包装：归一化 value（金额字段还原原文全精度）；置信度 = 众数/20 的百分数。"""
+    final = {}
+    for f, v in extracted.items():
+        if f == "提取说明":
+            final[f] = v   # 说明字段原样保留，不包属性
+            continue
+        value = normalize_value(v, f)                       # 归一化 value
+        if f in NUMBER_FIELDS:
+            value = restore_amount_precision(value, text, f)  # 金额字段还原为原文全精度（防四舍五入）
+        final[f] = {
+            "value": value,
+            "置信度": round(counts.get(f, 0) / total_votes * 100),  # 众数/20 的百分数
+        }
+    final.setdefault("文书类型", doc_type)
+    return final
+
+
+# ============================================================
+# Prompt 模板
+# ============================================================
+def extract_prompt(fields: list[str]) -> str:
+    lines = "\n".join(f"   - {f}" for f in fields)
+    return f"""你是一名严谨的法律文书解析专家。
+用户输入一份法律文书。请严格按照字段提取规则提取。
+
+执行流程（必须按顺序）：
+1. 首先调用 load_skill 工具，传入对应文书类型的 skill 名称，读取该 skill 的完整提取规则。
+2. 严格按读取到的 SKILL 规则逐字段提取，不得遗漏。
+
+关键要求：
+1. 每个字段都必须严格按 SKILL 定义的规则识别，不得遗漏。
+2. 无法提取的字段填 null。
+3. 提取说明为 JSON 对象，逐字段记录提取依据或无法提取的原因，必须填写。字段名必须是"提取说明"。
+4. 字段名必须与下方"字段清单"完全一致（中文），不得翻译或改写。
+5. 只输出 JSON，不要输出其他任何文字、解释或代码块标记。
+
+字段清单：
+{lines}
+"""
+
+
+# ============================================================
+# 处理 ocr_split 输出的 md 文件
+# ============================================================
+def collect_md_files(input_path: Path) -> list[Path]:
+    """收集输入路径下需要 LLM 解析的 md 文件。
+
+    - 单文件：直接返回自身（限 .md）
+    - 目录：优先读取 ocr_split 生成的 manifest.json，只处理其中 format=md 的条目；
+      目录下没有 manifest.json 时，回退为递归收集 *.md。
+    """
+    input_path = input_path.resolve()
+    if input_path.is_file():
+        return [input_path] if input_path.suffix.lower() == ".md" else []
+
+    md_files: list[Path] = []
+    seen: set[Path] = set()
+    for manifest_path in sorted(input_path.rglob("manifest.json")):
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, list):
+            continue
+        for item in manifest:
+            if not isinstance(item, dict):
+                continue
+            fname = str(item.get("file") or "").strip()
+            if not fname or item.get("format") != "md":
+                continue
+            md_path = (manifest_path.parent / fname).resolve()
+            if md_path not in seen and md_path.suffix.lower() == ".md" and md_path.exists():
+                seen.add(md_path)
+                md_files.append(md_path)
+
+    if md_files:
+        return sorted(md_files)
+    return sorted(input_path.rglob("*.md"))
+
+
+def rel_key(md_path: Path, root: Path) -> str:
+    """生成结果 JSON 中的稳定键：优先用相对 root 的 POSIX 路径，跨目录时退回文件名。"""
+    try:
+        return md_path.relative_to(root).as_posix()
+    except ValueError:
+        return md_path.name
+
+
+def doc_type_from_filename(md_path: Path) -> str:
+    """从 ocr_split 生成的 md 文件名提取文书类型。
+
+    ocr_split 的命名规则为：
+      - 单 PDF：<两位序号>_<文书类型>.md
+      - 多 PDF：<原PDF名>_<两位序号>_<文书类型>.md
+    文书类型中的非法字符已被替换为下划线，这里取最后一个「序号_」之后的部分。
+    """
+    stem = md_path.stem
+    m = re.search(r"(?:^|_)(\d{2})_(.+)$", stem)
+    return m.group(2) if m else stem
+
+
+def process_md_files(md_files: list[Path], root: Path) -> dict:
+    """逐篇处理 md，返回 {相对路径: {"file", "result"}}；单篇失败不中断整批。"""
+    outputs = {}
+    for i, md_path in enumerate(md_files, 1):
+        key = rel_key(md_path, root)
+        print(f"[{i}/{len(md_files)}] {key}", flush=True)
+        try:
+            md_content = md_path.read_text(encoding="utf-8")
+            doc_type = doc_type_from_filename(md_path)
+            final = process_document(md_content, doc_type)
+            outputs[key] = {"file": key, "result": final}
+            print(f"  文书类型: {final.get('文书类型') or doc_type}", flush=True)
+        except Exception as e:
+            print(f"  [失败] {e}", flush=True)
+            outputs[key] = {"file": key, "错误": str(e)}
+    return outputs
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="LLM 字段解析独立脚本：处理 ocr_split.py 生成的 .md 文书"
+    )
+    parser.add_argument(
+        "input_path",
+        help="ocr_split 输出根目录、单个案件目录或单个 .md 文件",
+    )
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="结果输出目录；默认：目录输入写到输入目录，单文件输入写到文件所在目录",
+    )
+    args = parser.parse_args()
+
+    root = Path(args.input_path).resolve()
+    assert root.exists(), f"路径不存在: {root}"
+    md_files = collect_md_files(root)
+    assert md_files, f"未找到 .md 文件: {root}"
+
+    out_root = Path(args.out).resolve() if args.out else (root if root.is_dir() else root.parent)
+    out_root.mkdir(parents=True, exist_ok=True)
+
+    print(f"共 {len(md_files)} 个 md 文件，输出到 {out_root}/llm_results.json")
+    outputs = process_md_files(md_files, root)
+    (out_root / "llm_results.json").write_text(
+        json.dumps(outputs, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"完成，结果见 {out_root / 'llm_results.json'}")
+
+
+if __name__ == "__main__":
+    main()
